@@ -39,4 +39,5 @@ python src/send_notification.py --test
 Copy `config.yaml.example` to `config.yaml` and update with your settings, including:
 - MySQL database credentials
 - Email SMTP settings and password
-- Amazon Product Advertising API credentials
+
+Note: This tool uses web scraping instead of Amazon's API to avoid eligibility requirements.

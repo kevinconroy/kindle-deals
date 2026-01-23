@@ -11,13 +11,6 @@ amazon:
   # Daily check time (24-hour format)
   daily_check_time: "09:00"
 
-  # Creators API credentials
-  # Get credentials at: https://affiliate-program.amazon.com/creatorsapi/
-  credential_id: "your-credential-id"
-  credential_secret: "your-credential-secret"
-  credential_version: "2.1"  # 2.1 for NA, 2.2 for EU, 2.3 for FE
-  marketplace: "www.amazon.com"  # www.amazon.com for US
-  partner_tag: "your-tag-20"
 
 database:
   # MySQL connection settings
