@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import logging
-import os
 import sys
-import time
 from typing import List, Dict, Any
 
 from config import Config
 from database import Database
-from scraper import AmazonScraper, extract_price, calculate_savings_percent
+from amazon.paapi import AmazonAPI
 from deal_logic import should_notify
 from email_notifier import EmailNotifier
 
@@ -19,46 +17,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def scrape_book_price(page, asin: str, delay: float = 2.0) -> Dict[str, Any]:
-    """Scrape price information for a book"""
-    url = f"https://www.amazon.com/dp/{asin}"
+def calculate_savings_percent(current_price: float, list_price: float) -> int:
+    """Calculate savings percentage"""
+    if list_price == 0:
+        return 0
 
-    try:
-        logger.debug(f"Scraping {url}")
-        page.goto(url)
-        page.wait_for_load_state('networkidle')
-
-        # Extract Kindle price
-        kindle_price_elem = page.locator('#kindle-price, .kindle-price').first
-        kindle_price_text = kindle_price_elem.inner_text() if kindle_price_elem else None
-        kindle_price = extract_price(kindle_price_text)
-
-        # Extract list price
-        list_price_elem = page.locator('.list-price, [data-a-strike="true"]').first
-        list_price_text = list_price_elem.inner_text() if list_price_elem else None
-        list_price = extract_price(list_price_text) or kindle_price
-
-        time.sleep(delay)  # Rate limiting
-
-        return {
-            'kindle_price': kindle_price,
-            'list_price': list_price
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to scrape price for {asin}: {e}")
-        return {
-            'kindle_price': None,
-            'list_price': None
-        }
+    savings = ((list_price - current_price) / list_price) * 100
+    return int(round(savings))
 
 
 def check_deals(config: Config, db: Database, target_asin: str = None):
-    """Check for deals on tracked books"""
-    session_path = os.path.expanduser(config.get('storage.browser_session_path'))
-    headless = config.get('scraping.headless', True)
-    page_timeout = config.get('scraping.page_timeout', 30) * 1000
-    delay = config.get('scraping.delay_between_requests', 2)
+    """Check for deals on tracked books using Amazon Product Advertising API"""
+    # Initialize Amazon API
+    api = AmazonAPI(
+        access_key=config.get('amazon.api_access_key'),
+        secret_key=config.get('amazon.api_secret_key'),
+        associate_tag=config.get('amazon.api_associate_tag'),
+        region=config.get('amazon.api_region', 'US')
+    )
 
     # Get books to check
     if target_asin:
@@ -71,20 +47,28 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
 
     deals_found = []
 
-    with AmazonScraper(session_path, headless, page_timeout) as scraper:
-        page = scraper.new_page()
+    for book in books:
+        asin = book['asin']
+        logger.info(f"Checking {book['title']}...")
 
-        for book in books:
-            asin = book['asin']
-            logger.info(f"Checking {book['title']}...")
-
-            # Scrape current price
-            price_data = scraper.retry_with_backoff(
-                lambda: scrape_book_price(page, asin, delay)
+        try:
+            # Get item info from API
+            items = api.get_items(
+                [asin],
+                item_ids_type='ASIN',
+                resources=['Offers.Listings.Price', 'Offers.Listings.SavingBasis']
             )
 
-            current_price = price_data['kindle_price']
-            list_price = price_data['list_price']
+            current_price = None
+            list_price = None
+
+            if items and items[0]:
+                item = items[0]
+                # Extract Kindle price from offers
+                if item.offers and item.offers.listings:
+                    listing = item.offers.listings[0]
+                    current_price = listing.price.amount if listing.price else None
+                    list_price = listing.saving_basis.amount if listing.saving_basis else current_price
 
             # Save price history
             db.add_price_history(asin, current_price, list_price)
@@ -115,7 +99,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
                 db.add_notification(asin, current_price)
                 logger.info(f"Deal found: {book['title']} - ${current_price:.2f} ({savings_percent}% off)")
 
-        page.close()
+        except Exception as e:
+            logger.error(f"Failed to get price for {asin}: {e}")
+            continue
 
     # Send email if deals found
     if deals_found:
