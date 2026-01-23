@@ -78,3 +78,17 @@ class Config:
                 return default
 
         return value
+
+    def get_email_password(self) -> str:
+        """Get email password from environment variable"""
+        password = os.environ.get('KINDLE_DEALS_PASSWORD')
+        if not password:
+            raise ValueError("KINDLE_DEALS_PASSWORD environment variable not set")
+        return password
+
+    def get_mysql_password(self) -> str:
+        """Get MySQL password from environment variable"""
+        password = os.environ.get('MYSQL_PASSWORD')
+        if not password:
+            raise ValueError("MYSQL_PASSWORD environment variable not set")
+        return password
