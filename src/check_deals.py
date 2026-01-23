@@ -3,17 +3,13 @@ import argparse
 import logging
 import sys
 import os
-from typing import List, Dict, Any
-
-# Add creatorsapi SDK to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'creatorsapi-python-sdk'))
+import re
+import time
+from typing import List, Dict, Any, Optional
 
 from config import Config
 from database import Database
-from creatorsapi_python_sdk.api_client import ApiClient
-from creatorsapi_python_sdk.api.default_api import DefaultApi
-from creatorsapi_python_sdk.models.get_items_request_content import GetItemsRequestContent
-from creatorsapi_python_sdk.exceptions import ApiException
+from scraper import AmazonScraper
 from deal_logic import should_notify
 from email_notifier import EmailNotifier
 
@@ -33,20 +29,100 @@ def calculate_savings_percent(current_price: float, list_price: float) -> int:
     return int(round(savings))
 
 
+def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
+    """Scrape book information from Amazon product page"""
+    try:
+        # Navigate to product page
+        url = f"https://www.amazon.com/dp/{asin}"
+        page.goto(url)
+        page.wait_for_load_state('networkidle')
+
+        # Extract title
+        title = None
+        try:
+            title_elem = page.locator('#productTitle').first
+            if title_elem.count() > 0:
+                title = title_elem.inner_text().strip()
+        except Exception:
+            pass
+
+        # Extract author
+        author = None
+        try:
+            author_elem = page.locator('.author .contributorNameID').first
+            if author_elem.count() > 0:
+                author = author_elem.inner_text().strip()
+        except Exception:
+            pass
+
+        # Extract cover image
+        cover_url = None
+        try:
+            img_elem = page.locator('#ebooksImgBlkFront, #imgBlkFront').first
+            if img_elem.count() > 0:
+                cover_url = img_elem.get_attribute('src')
+        except Exception:
+            pass
+
+        # Extract Kindle price
+        current_price = None
+        try:
+            # Try multiple selectors for Kindle price
+            price_selectors = [
+                '.kindle-price .a-color-price',
+                '#kindle-price',
+                '#price',
+                '.a-price .a-offscreen'
+            ]
+            for selector in price_selectors:
+                price_elem = page.locator(selector).first
+                if price_elem.count() > 0:
+                    price_text = price_elem.inner_text().strip()
+                    # Extract number from price text (e.g., "$3.99" -> 3.99)
+                    match = re.search(r'\$?(\d+\.\d{2})', price_text)
+                    if match:
+                        current_price = float(match.group(1))
+                        break
+        except Exception:
+            pass
+
+        # Extract list price (original price)
+        list_price = None
+        try:
+            list_price_elem = page.locator('.a-text-price .a-offscreen').first
+            if list_price_elem.count() > 0:
+                price_text = list_price_elem.inner_text().strip()
+                match = re.search(r'\$?(\d+\.\d{2})', price_text)
+                if match:
+                    list_price = float(match.group(1))
+        except Exception:
+            pass
+
+        # If no list price, use current price
+        if not list_price and current_price:
+            list_price = current_price
+
+        return {
+            'title': title,
+            'author': author,
+            'cover_url': cover_url,
+            'current_price': current_price,
+            'list_price': list_price
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to scrape {asin}: {e}")
+        return None
+
+
 def check_deals(config: Config, db: Database, target_asin: str = None):
-    """Check for deals on tracked books using Amazon Creators API"""
-    # Initialize Amazon Creators API
-    api_client = ApiClient(
-        credential_id=config.get('amazon.credential_id'),
-        credential_secret=config.get('amazon.credential_secret'),
-        version=config.get('amazon.credential_version', '2.1')
-    )
+    """Check for deals on tracked books using web scraping"""
+    session_path = os.path.expanduser(config.get('storage.browser_session_path'))
+    os.makedirs(os.path.dirname(session_path), exist_ok=True)
 
-    api = DefaultApi(api_client)
-
-    # Get configuration
-    marketplace = config.get('amazon.marketplace', 'www.amazon.com')
-    partner_tag = config.get('amazon.partner_tag')
+    headless = config.get('scraping.headless', True)
+    page_timeout = config.get('scraping.page_timeout', 30) * 1000
+    check_delay = config.get('scraping.check_delay', 2000)
 
     # Get books to check
     if target_asin:
@@ -59,124 +135,89 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
 
     deals_found = []
 
-    for book in books:
-        asin = book['asin']
-        title = book['title'] or asin
-        logger.info(f"Checking {title}...")
+    with AmazonScraper(session_path, headless, page_timeout) as scraper:
+        page = scraper.new_page()
 
         try:
-            # Define resources to request
-            resources = [
-                'itemInfo.title',
-                'itemInfo.byLineInfo',
-                'images.primary.large',
-                'offersV2.listings.price',
-                'offersV2.listings.savingBasis'
-            ]
+            for book in books:
+                asin = book['asin']
+                title = book['title'] or asin
+                logger.info(f"Checking {title}...")
 
-            # Create GetItems request
-            get_items_request = GetItemsRequestContent(
-                partner_tag=partner_tag,
-                item_ids=[asin],
-                resources=resources
-            )
+                try:
+                    # Scrape book information
+                    book_info = scrape_book_info(page, asin)
 
-            # Get item info from API
-            response = api.get_items(
-                x_marketplace=marketplace,
-                get_items_request_content=get_items_request
-            )
+                    if not book_info:
+                        logger.warning(f"Could not scrape info for {asin}")
+                        continue
 
-            current_price = None
-            list_price = None
-            author = book['author']
-            cover_url = book['cover_url']
+                    current_price = book_info['current_price']
+                    list_price = book_info['list_price']
+                    author = book_info['author'] or book['author']
+                    cover_url = book_info['cover_url'] or book['cover_url']
 
-            if response and response.items_result and response.items_result.items:
-                item = response.items_result.items[0]
+                    # Update metadata if book title is missing
+                    if not book['title'] and book_info['title']:
+                        title = book_info['title']
+                        logger.info(f"Updated title from scrape: {title}")
+                        db.update_book_metadata(asin, title, author, cover_url)
 
-                # Update metadata if book title is missing
-                if not book['title']:
-                    # Extract title
-                    if item.item_info and item.item_info.title:
-                        title = item.item_info.title.display_value
-                        logger.info(f"Updated title from API: {title}")
+                    # Save price history
+                    db.add_price_history(asin, current_price, list_price)
 
-                    # Extract author
-                    if item.item_info and item.item_info.by_line_info and item.item_info.by_line_info.contributors:
-                        author = item.item_info.by_line_info.contributors[0].name
-                        logger.info(f"Updated author from API: {author}")
+                    if current_price is None or list_price is None:
+                        logger.warning(f"Could not determine price for {title}")
+                        continue
 
-                    # Extract cover URL
-                    if item.images and item.images.primary and item.images.primary.large:
-                        cover_url = item.images.primary.large.url
-                        logger.info(f"Updated cover URL from API")
+                    # Check if should notify
+                    last_notification = db.get_last_notification(asin)
+                    last_notified_price = last_notification['notified_price'] if last_notification else None
 
-                    # Update database with metadata
-                    db.update_book_metadata(asin, title, author, cover_url)
+                    if should_notify(current_price, list_price, last_notified_price):
+                        savings_percent = calculate_savings_percent(current_price, list_price)
 
-                # Extract Kindle price from offersV2
-                if item.offers_v2 and item.offers_v2.listings:
-                    listing = item.offers_v2.listings[0]
-                    if listing.price:
-                        current_price = listing.price.amount
-                    if listing.saving_basis:
-                        list_price = listing.saving_basis.amount
-                    else:
-                        list_price = current_price
+                        deal = {
+                            'asin': asin,
+                            'title': title,
+                            'author': author,
+                            'cover_url': cover_url,
+                            'current_price': current_price,
+                            'list_price': list_price,
+                            'savings_percent': savings_percent
+                        }
+                        deals_found.append(deal)
 
-        except ApiException as e:
-            logger.error(f"API error for {asin}: {e}")
-            continue
-        except Exception as e:
-            logger.error(f"Failed to process {asin}: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
+                        # Record notification
+                        db.add_notification(asin, current_price)
+                        logger.info(f"Deal found: {title} - ${current_price:.2f} ({savings_percent}% off)")
 
-        # Save price history
-        db.add_price_history(asin, current_price, list_price)
+                    # Delay between checks to avoid rate limiting
+                    time.sleep(check_delay / 1000)
 
-        if current_price is None or list_price is None:
-            logger.warning(f"Could not determine price for {title}")
-            continue
+                except Exception as e:
+                    logger.error(f"Failed to process {asin}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
 
-        # Check if should notify
-        last_notification = db.get_last_notification(asin)
-        last_notified_price = last_notification['notified_price'] if last_notification else None
-
-        if should_notify(current_price, list_price, last_notified_price):
-            savings_percent = calculate_savings_percent(current_price, list_price)
-
-            deal = {
-                'asin': asin,
-                'title': title,
-                'author': author,
-                'cover_url': cover_url,
-                'current_price': current_price,
-                'list_price': list_price,
-                'savings_percent': savings_percent
-            }
-            deals_found.append(deal)
-
-            # Record notification
-            db.add_notification(asin, current_price)
-            logger.info(f"Deal found: {title} - ${current_price:.2f} ({savings_percent}% off)")
+        finally:
+            page.close()
 
     # Send email if deals found
     if deals_found:
         logger.info(f"Sending email for {len(deals_found)} deals...")
 
         notifier = EmailNotifier(
-            smtp_server=config.get('notifications.email.smtp_server'),
-            smtp_port=config.get('notifications.email.smtp_port'),
-            from_address=config.get('notifications.email.from_address'),
+            smtp_server=config.get('email.smtp_server'),
+            smtp_port=config.get('email.smtp_port'),
+            from_address=config.get('email.from_address'),
             password=config.get_email_password()
         )
 
         html = EmailNotifier.generate_email_html(deals_found)
         subject = f"Kindle Deals: {len(deals_found)} book(s) on sale!"
-        to_address = config.get('notifications.email.to_address')
+        to_address = config.get('email.to_address')
 
         notifier.send_email(to_address, subject, html)
         logger.info("Email sent successfully")
