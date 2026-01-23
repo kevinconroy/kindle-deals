@@ -11,6 +11,13 @@ amazon:
   # Daily check time (24-hour format)
   daily_check_time: "09:00"
 
+  # Product Advertising API credentials
+  # Sign up at: https://affiliate-program.amazon.com/assoc_credentials/home
+  api_access_key: "your-access-key"
+  api_secret_key: "your-secret-key"  # Can also use AMAZON_API_SECRET_KEY env var
+  api_associate_tag: "your-associate-tag"
+  api_region: "US"  # US, UK, FR, DE, JP, etc.
+
 database:
   # MySQL connection settings
   host: "localhost"
