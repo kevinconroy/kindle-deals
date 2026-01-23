@@ -66,40 +66,87 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                 logger.error("Not logged in. Please run with --login to log in and save your session.")
                 sys.exit(2)
 
-            # Filter for samples
-            logger.info("Syncing Kindle library...")
-            # Note: Actual selectors would need to be determined by inspecting the page
-            # This is a placeholder implementation
+            # Filter for samples using the dropdown
+            logger.info("Filtering to view samples...")
+            try:
+                # Click the View dropdown and select "Samples"
+                view_dropdown = page.locator('select#myx-content-type-filter')
+                if view_dropdown.count() > 0:
+                    view_dropdown.select_option('Sample')
+                    page.wait_for_load_state('networkidle')
+                    logger.info("Filtered to samples view")
+                else:
+                    logger.warning("Could not find view filter dropdown")
+            except Exception as e:
+                logger.warning(f"Could not filter to samples: {e}")
 
+            # Scrape all pages
             samples = []
-            sample_elements = page.locator('[data-content-type="Sample"]').all()
+            page_num = 1
 
-            logger.info(f"Found {len(sample_elements)} samples")
+            while True:
+                logger.info(f"Scraping page {page_num}...")
 
-            for element in sample_elements:
-                try:
-                    title = element.locator('.title').inner_text()
-                    author = element.locator('.author').inner_text()
+                # Find all book divs with class "digital_entity_title"
+                book_divs = page.locator('.digital_entity_title').all()
 
-                    # Extract ASIN from element attributes or links
-                    asin = element.get_attribute('data-asin')
+                if not book_divs:
+                    logger.info("No more books found")
+                    break
 
-                    # Extract cover URL
-                    cover_img = element.locator('img').first
-                    cover_url = cover_img.get_attribute('src') if cover_img else None
+                logger.info(f"Found {len(book_divs)} books on page {page_num}")
 
-                    sample = {
-                        'asin': asin,
-                        'title': title,
-                        'author': author,
-                        'cover_url': cover_url
-                    }
-                    samples.append(sample)
-                    logger.info(f"Found: {title} by {author}")
+                for div in book_divs:
+                    try:
+                        # Extract ASIN from div id (format: "content-title-B076NTR2WX")
+                        div_id = div.get_attribute('id')
+                        if not div_id or not div_id.startswith('content-title-'):
+                            logger.warning(f"Skipping div without valid id: {div_id}")
+                            continue
 
-                except Exception as e:
-                    logger.warning(f"Failed to extract book data: {e}")
-                    continue
+                        asin = div_id.replace('content-title-', '')
+
+                        # Extract title
+                        title_element = div.locator('.a-size-base-plus').first
+                        title = title_element.inner_text().strip() if title_element.count() > 0 else None
+
+                        # Extract author
+                        author_element = div.locator('.a-size-small.a-color-secondary').first
+                        author = author_element.inner_text().strip() if author_element.count() > 0 else None
+
+                        # Extract cover URL
+                        cover_element = div.locator('img').first
+                        cover_url = cover_element.get_attribute('src') if cover_element.count() > 0 else None
+
+                        if not title:
+                            logger.warning(f"Skipping book without title: {asin}")
+                            continue
+
+                        sample = {
+                            'asin': asin,
+                            'title': title,
+                            'author': author,
+                            'cover_url': cover_url
+                        }
+                        samples.append(sample)
+                        logger.info(f"Found: {title} by {author} (ASIN: {asin})")
+
+                    except Exception as e:
+                        logger.warning(f"Failed to extract book data: {e}")
+                        continue
+
+                # Check for next page button
+                next_button = page.locator('.a-pagination .a-last:not(.a-disabled)')
+                if next_button.count() > 0:
+                    logger.info("Moving to next page...")
+                    next_button.click()
+                    page.wait_for_load_state('networkidle')
+                    page_num += 1
+                else:
+                    logger.info("No more pages")
+                    break
+
+            logger.info(f"Total books found: {len(samples)}")
 
             if dry_run:
                 logger.info(f"DRY RUN: Would add {len(samples)} books to database")
