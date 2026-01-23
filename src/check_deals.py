@@ -2,12 +2,18 @@
 import argparse
 import logging
 import sys
+import os
 from typing import List, Dict, Any
+
+# Add creatorsapi SDK to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'creatorsapi-python-sdk'))
 
 from config import Config
 from database import Database
-from amazon_paapi import AmazonApi
-from amazon_paapi.models.regions import Country
+from creatorsapi_python_sdk.api_client import ApiClient
+from creatorsapi_python_sdk.api.default_api import DefaultApi
+from creatorsapi_python_sdk.models.get_items_request_content import GetItemsRequestContent
+from creatorsapi_python_sdk.exceptions import ApiException
 from deal_logic import should_notify
 from email_notifier import EmailNotifier
 
@@ -28,17 +34,19 @@ def calculate_savings_percent(current_price: float, list_price: float) -> int:
 
 
 def check_deals(config: Config, db: Database, target_asin: str = None):
-    """Check for deals on tracked books using Amazon Product Advertising API"""
-    # Initialize Amazon API
-    region = config.get('amazon.api_region', 'US')
-    country = getattr(Country, region, Country.US)
-
-    api = AmazonApi(
-        key=config.get('amazon.api_access_key'),
-        secret=config.get('amazon.api_secret_key'),
-        tag=config.get('amazon.api_associate_tag'),
-        country=country
+    """Check for deals on tracked books using Amazon Creators API"""
+    # Initialize Amazon Creators API
+    api_client = ApiClient(
+        credential_id=config.get('amazon.credential_id'),
+        credential_secret=config.get('amazon.credential_secret'),
+        version=config.get('amazon.credential_version', '2.1')
     )
+
+    api = DefaultApi(api_client)
+
+    # Get configuration
+    marketplace = config.get('amazon.marketplace', 'www.amazon.com')
+    partner_tag = config.get('amazon.partner_tag')
 
     # Get books to check
     if target_asin:
@@ -57,16 +65,35 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
         logger.info(f"Checking {title}...")
 
         try:
+            # Define resources to request
+            resources = [
+                'itemInfo.title',
+                'itemInfo.byLineInfo',
+                'images.primary.large',
+                'offersV2.listings.price',
+                'offersV2.listings.savingBasis'
+            ]
+
+            # Create GetItems request
+            get_items_request = GetItemsRequestContent(
+                partner_tag=partner_tag,
+                item_ids=[asin],
+                resources=resources
+            )
+
             # Get item info from API
-            items = api.get_items(asin)
+            response = api.get_items(
+                x_marketplace=marketplace,
+                get_items_request_content=get_items_request
+            )
 
             current_price = None
             list_price = None
             author = book['author']
             cover_url = book['cover_url']
 
-            if items and len(items) > 0:
-                item = items[0]
+            if response and response.items_result and response.items_result.items:
+                item = response.items_result.items[0]
 
                 # Update metadata if book title is missing
                 if not book['title']:
@@ -76,10 +103,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
                         logger.info(f"Updated title from API: {title}")
 
                     # Extract author
-                    if item.item_info and item.item_info.by_line_info:
-                        if item.item_info.by_line_info.contributors:
-                            author = item.item_info.by_line_info.contributors[0].name
-                            logger.info(f"Updated author from API: {author}")
+                    if item.item_info and item.item_info.by_line_info and item.item_info.by_line_info.contributors:
+                        author = item.item_info.by_line_info.contributors[0].name
+                        logger.info(f"Updated author from API: {author}")
 
                     # Extract cover URL
                     if item.images and item.images.primary and item.images.primary.large:
@@ -89,9 +115,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
                     # Update database with metadata
                     db.update_book_metadata(asin, title, author, cover_url)
 
-                # Extract Kindle price from offers
-                if item.offers and item.offers.listings:
-                    listing = item.offers.listings[0]
+                # Extract Kindle price from offersV2
+                if item.offers_v2 and item.offers_v2.listings:
+                    listing = item.offers_v2.listings[0]
                     if listing.price:
                         current_price = listing.price.amount
                     if listing.saving_basis:
@@ -99,6 +125,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
                     else:
                         list_price = current_price
 
+        except ApiException as e:
+            logger.error(f"API error for {asin}: {e}")
+            continue
         except Exception as e:
             logger.error(f"Failed to process {asin}: {e}")
             import traceback

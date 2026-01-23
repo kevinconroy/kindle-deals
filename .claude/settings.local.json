@@ -10,7 +10,9 @@
       "Bash(chmod:*)",
       "Bash(python3 -m py_compile:*)",
       "Bash(./src/send_notification.py:*)",
-      "Bash(git mv:*)"
+      "Bash(git mv:*)",
+      "WebFetch(domain:affiliate-program.amazon.com)",
+      "WebSearch"
     ]
   }
 }
