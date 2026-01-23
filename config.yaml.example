@@ -1,0 +1,64 @@
+# Kindle Deals Monitor Configuration
+# Copy this file to config.yaml and customize for your setup
+
+amazon:
+  # Amazon domain to check
+  domain: "amazon.com"
+
+  # Check frequency (in seconds)
+  check_frequency: 3600  # Check every hour
+
+  # Daily check time (24-hour format)
+  daily_check_time: "09:00"
+
+database:
+  # MySQL connection settings
+  host: "localhost"
+  user: "root"
+  database: "kindle_deals"
+  # Password should be set via MYSQL_PASSWORD environment variable
+
+storage:
+  # Directory for browser session data
+  browser_session_path: "~/.kindle-deals/browser-session"
+
+email:
+  # SMTP server settings
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+
+  # Email addresses
+  from_address: "your-email@gmail.com"
+  to_addresses:
+    - "recipient@example.com"
+
+  # Password should be set via KINDLE_DEALS_PASSWORD environment variable
+
+  # Email subject template
+  subject_template: "Kindle Deal Alert: {title}"
+
+deals:
+  # Maximum price to consider as a deal (in dollars)
+  max_price: 4.00
+
+  # Minimum discount percentage required
+  min_discount_percent: 50
+
+  # Re-notification cooldown (days)
+  # Don't send another notification for the same book within this period
+  notification_cooldown_days: 30
+
+scraping:
+  # Browser settings
+  headless: true
+
+  # Timeouts (in milliseconds)
+  page_load_timeout: 30000
+  element_timeout: 10000
+
+  # Delays (in milliseconds)
+  # Delay between checking different books
+  check_delay: 2000
+
+  # Delay between page actions
+  action_delay: 500
