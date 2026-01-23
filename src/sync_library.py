@@ -23,18 +23,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def sync_library(config: Config, db: Database, dry_run: bool = False):
+def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode: bool = False, headless_override: bool = None):
     """Sync Kindle library from Amazon My Books page"""
     session_path = os.path.expanduser(config.get('storage.browser_session_path'))
     os.makedirs(os.path.dirname(session_path), exist_ok=True)
 
-    headless = config.get('scraping.headless', True)
+    # Use override if provided, otherwise use config
+    if headless_override is not None:
+        headless = headless_override
+    else:
+        headless = config.get('scraping.headless', True)
+
     page_timeout = config.get('scraping.page_timeout', 30) * 1000
 
     with AmazonScraper(session_path, headless, page_timeout) as scraper:
         page = scraper.new_page()
 
         try:
+            # Login mode: Let user log in before scraping
+            if login_mode:
+                logger.info("Opening Amazon for login...")
+                page.goto("https://www.amazon.com")
+                page.wait_for_load_state('networkidle')
+
+                print("\n" + "=" * 70)
+                print("  Please log in to your Amazon account in the browser window")
+                print("=" * 70)
+                print("\nOnce you're logged in, press Enter to continue...")
+                input()
+
+                logger.info("Login complete, saving session...")
+
             # Navigate to Amazon My Books
             logger.info("Navigating to Amazon My Books...")
             page.goto("https://www.amazon.com/hz/mycd/myx")
@@ -44,7 +63,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False):
 
             # Check if logged in (look for sign-in elements)
             if page.locator('input[name="email"]').count() > 0:
-                logger.error("Not logged in. Please run with --headless false and log in manually.")
+                logger.error("Not logged in. Please run with --login to log in and save your session.")
                 sys.exit(2)
 
             # Filter for samples
@@ -105,6 +124,9 @@ def main():
     parser.add_argument('--config', default='config.yaml', help='Path to config file')
     parser.add_argument('--dry-run', action='store_true', help='Dry run mode')
     parser.add_argument('--verbose', action='store_true', help='Verbose output')
+    parser.add_argument('--login', action='store_true', help='Login mode - opens browser and waits for you to log in')
+    parser.add_argument('--headless', type=lambda x: x.lower() == 'true', default=None,
+                        help='Override headless mode (true/false)')
 
     args = parser.parse_args()
 
@@ -120,7 +142,13 @@ def main():
             password=config.get('database.password'),
             database=config.get('database.database')
         )
-        sync_library(config, db, dry_run=args.dry_run)
+
+        # If login mode, force non-headless
+        headless_override = args.headless
+        if args.login and headless_override is None:
+            headless_override = False
+
+        sync_library(config, db, dry_run=args.dry_run, login_mode=args.login, headless_override=headless_override)
         db.close()
 
         sys.exit(0)

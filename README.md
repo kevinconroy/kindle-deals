@@ -21,7 +21,10 @@ After setup, edit `config.yaml` with your settings (MySQL credentials, email, Am
 ## Usage
 
 ```bash
-# Sync your Kindle library
+# First time: Login and save session
+python src/sync_library.py --login
+
+# Sync your Kindle library (after login)
 python src/sync_library.py
 
 # Check for deals
