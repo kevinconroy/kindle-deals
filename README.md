@@ -15,8 +15,8 @@ python setup.py
 ## Usage
 
 ```bash
-# Collect samples
-python src/collect_samples.py
+# Sync your Kindle library
+python src/sync_library.py
 
 # Check for deals
 python src/check_deals.py

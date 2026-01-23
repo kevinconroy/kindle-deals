@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+Sync Kindle library from Amazon My Books page.
+
+This script logs into Amazon using Playwright, navigates to the My Books page,
+and syncs your Kindle library (including samples) to the local database.
+"""
+
 import argparse
 import logging
 import os
@@ -16,8 +23,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def collect_samples(config: Config, db: Database, dry_run: bool = False):
-    """Collect Kindle samples from Amazon My Books page"""
+def sync_library(config: Config, db: Database, dry_run: bool = False):
+    """Sync Kindle library from Amazon My Books page"""
     session_path = os.path.expanduser(config.get('storage.browser_session_path'))
     os.makedirs(os.path.dirname(session_path), exist_ok=True)
 
@@ -41,7 +48,7 @@ def collect_samples(config: Config, db: Database, dry_run: bool = False):
                 sys.exit(2)
 
             # Filter for samples
-            logger.info("Filtering for Kindle samples...")
+            logger.info("Syncing Kindle library...")
             # Note: Actual selectors would need to be determined by inspecting the page
             # This is a placeholder implementation
 
@@ -72,29 +79,29 @@ def collect_samples(config: Config, db: Database, dry_run: bool = False):
                     logger.info(f"Found: {title} by {author}")
 
                 except Exception as e:
-                    logger.warning(f"Failed to extract sample data: {e}")
+                    logger.warning(f"Failed to extract book data: {e}")
                     continue
 
             if dry_run:
-                logger.info(f"DRY RUN: Would add {len(samples)} samples to database")
+                logger.info(f"DRY RUN: Would add {len(samples)} books to database")
                 return
 
-            # Add samples to database
+            # Add books to database
             for sample in samples:
                 db.add_book(**sample)
                 logger.info(f"Added to database: {sample['title']}")
 
-            logger.info(f"Successfully collected {len(samples)} samples")
+            logger.info(f"Successfully synced {len(samples)} books")
 
         except Exception as e:
-            logger.error(f"Failed to collect samples: {e}")
+            logger.error(f"Failed to sync library: {e}")
             raise
         finally:
             page.close()
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Collect Kindle samples from Amazon')
+    parser = argparse.ArgumentParser(description='Sync Kindle library from Amazon')
     parser.add_argument('--config', default='config.yaml', help='Path to config file')
     parser.add_argument('--dry-run', action='store_true', help='Dry run mode')
     parser.add_argument('--verbose', action='store_true', help='Verbose output')
@@ -107,15 +114,13 @@ def main():
     try:
         config = Config(args.config)
 
-        # Initialize MySQL Database with connection parameters from config
         db = Database(
             host=config.get('database.host'),
             user=config.get('database.user'),
             password=config.get_mysql_password(),
             database=config.get('database.database')
         )
-
-        collect_samples(config, db, dry_run=args.dry_run)
+        sync_library(config, db, dry_run=args.dry_run)
         db.close()
 
         sys.exit(0)

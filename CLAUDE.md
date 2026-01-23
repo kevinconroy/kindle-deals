@@ -42,8 +42,8 @@ pytest --cov=src
 
 ### Running Scripts
 ```bash
-# Collect books from Amazon "My Books" page
-python src/collect_samples.py
+# Sync Kindle library from Amazon "My Books" page
+python src/sync_library.py
 
 # Check for deals on tracked books
 python src/check_deals.py
@@ -91,7 +91,7 @@ The application consists of five main modules:
 
 ### Scripts
 
-1. **collect_samples.py** - Collects books from Amazon "My Books" page using Playwright
+1. **sync_library.py** - Syncs your Kindle library from Amazon "My Books" page using Playwright
 2. **check_deals.py** - Checks book prices via Product Advertising API and sends notifications
 3. **send_notification.py** - Sends test email notifications
 
