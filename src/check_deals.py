@@ -49,7 +49,8 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
 
     for book in books:
         asin = book['asin']
-        logger.info(f"Checking {book['title']}...")
+        title = book['title'] or asin
+        logger.info(f"Checking {title}...")
 
         try:
             # Get item info from API (including metadata)
@@ -67,15 +68,14 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
 
             current_price = None
             list_price = None
-            title = book['title']
             author = book['author']
             cover_url = book['cover_url']
 
             if items and items[0]:
                 item = items[0]
 
-                # Update metadata if book title is just the ASIN (placeholder)
-                if title == asin:
+                # Update metadata if book title is missing or placeholder
+                if not book['title']:
                     # Extract title
                     if item.item_info and item.item_info.title and item.item_info.title.display_value:
                         title = item.item_info.title.display_value

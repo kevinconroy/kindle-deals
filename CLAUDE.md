@@ -104,13 +104,15 @@ The application uses MySQL with three tables:
 ```sql
 CREATE TABLE books (
     asin VARCHAR(20) PRIMARY KEY,
-    title VARCHAR(500) NOT NULL,
+    title VARCHAR(500),
     author VARCHAR(255),
     cover_url VARCHAR(1000),
     date_added DATETIME NOT NULL,
     is_active TINYINT(1) DEFAULT 1
 )
 ```
+
+Note: Title can be NULL when books are first synced from library (ASIN only). The check_deals script will fetch and populate title/author/cover_url from the Amazon API.
 
 ### price_history table
 ```sql

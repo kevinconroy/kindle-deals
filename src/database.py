@@ -59,13 +59,22 @@ class Database:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS books (
                 asin VARCHAR(20) PRIMARY KEY,
-                title VARCHAR(500) NOT NULL,
+                title VARCHAR(500),
                 author VARCHAR(255),
                 cover_url VARCHAR(1000),
                 date_added DATETIME NOT NULL,
                 is_active TINYINT(1) DEFAULT 1
             )
         """)
+
+        # Migrate existing table to allow NULL title (for existing databases)
+        try:
+            cursor.execute("""
+                ALTER TABLE books MODIFY title VARCHAR(500) NULL
+            """)
+        except Exception:
+            # Ignore if already nullable or other issues
+            pass
 
         # Price history table
         cursor.execute("""
@@ -93,20 +102,19 @@ class Database:
         self.conn.commit()
 
     def add_book(self, asin: str, title: str = None, author: str = None,
-                 cover_url: str = None) -> None:
+                 cover_url: str = None) -> bool:
         """
         Add a new book to the database.
 
         Args:
             asin: Amazon Standard Identification Number
-            title: Book title (optional, defaults to ASIN if not provided)
+            title: Book title (optional, will be NULL if not provided)
             author: Book author (optional)
             cover_url: URL to book cover image (optional)
-        """
-        # Use ASIN as title if title not provided
-        if not title:
-            title = asin
 
+        Returns:
+            True if book was newly added, False if already existed
+        """
         cursor = self.conn.cursor()
         cursor.execute("""
             INSERT IGNORE INTO books (asin, title, author, cover_url, date_added, is_active)
