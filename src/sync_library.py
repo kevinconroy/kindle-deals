@@ -66,18 +66,42 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                 logger.error("Not logged in. Please run with --login to log in and save your session.")
                 sys.exit(2)
 
+            # Get total count from CONTENT_COUNT element
+            total_items = 0
+            total_pages = 1
+            try:
+                content_count = page.locator('#CONTENT_COUNT').first
+                if content_count.count() > 0:
+                    count_text = content_count.inner_text().strip()
+                    # Parse "Showing 26 to 50 of 139 items" to extract 139
+                    import re
+                    match = re.search(r'of (\d+) items?', count_text)
+                    if match:
+                        total_items = int(match.group(1))
+                        total_pages = (total_items + 24) // 25  # Round up
+                        logger.info(f"Found {total_items} total items, will scrape {total_pages} pages")
+                    else:
+                        logger.warning(f"Could not parse count from: {count_text}")
+            except Exception as e:
+                logger.warning(f"Could not determine total count: {e}")
+                logger.info("Will scrape until error...")
+
             # Scrape all pages
             samples = []
-            page_num = 1
 
-            while True:
-                logger.info(f"Scraping page {page_num}...")
+            for page_num in range(1, total_pages + 1):
+                logger.info(f"Scraping page {page_num} of {total_pages}...")
+
+                # Navigate to specific page
+                if page_num > 1:
+                    page.goto(f"https://www.amazon.com/hz/mycd/digital-console/contentlist/booksSamples/dateDsc?pageNumber={page_num}")
+                    page.wait_for_load_state('networkidle')
 
                 # Find all book divs with class "digital_entity_title"
                 book_divs = page.locator('.digital_entity_title').all()
 
                 if not book_divs:
-                    logger.info("No more books found")
+                    logger.info(f"No books found on page {page_num}, stopping")
                     break
 
                 logger.info(f"Found {len(book_divs)} books on page {page_num}")
@@ -120,17 +144,6 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                     except Exception as e:
                         logger.warning(f"Failed to extract book data: {e}")
                         continue
-
-                # Check for next page button
-                next_button = page.locator('.a-pagination .a-last:not(.a-disabled)')
-                if next_button.count() > 0:
-                    logger.info("Moving to next page...")
-                    next_button.click()
-                    page.wait_for_load_state('networkidle')
-                    page_num += 1
-                else:
-                    logger.info("No more pages")
-                    break
 
             logger.info(f"Total books found: {len(samples)}")
 
