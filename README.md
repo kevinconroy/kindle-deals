@@ -27,6 +27,7 @@ python src/send_notification.py --test
 
 ## Configuration
 
-Copy `config.yaml.example` to `config.yaml` and update with your settings.
-
-Set environment variable: `KINDLE_DEALS_PASSWORD` for email SMTP password.
+Copy `config.yaml.example` to `config.yaml` and update with your settings, including:
+- MySQL database credentials
+- Email SMTP settings and password
+- Amazon Product Advertising API credentials

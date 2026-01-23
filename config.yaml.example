@@ -14,7 +14,7 @@ amazon:
   # Product Advertising API credentials
   # Sign up at: https://affiliate-program.amazon.com/assoc_credentials/home
   api_access_key: "your-access-key"
-  api_secret_key: "your-secret-key"  # Can also use AMAZON_API_SECRET_KEY env var
+  api_secret_key: "your-secret-key"
   api_associate_tag: "your-associate-tag"
   api_region: "US"  # US, UK, FR, DE, JP, etc.
 
@@ -23,7 +23,7 @@ database:
   host: "localhost"
   user: "root"
   database: "kindle_deals"
-  password: "your-mysql-password"  # Or set via MYSQL_PASSWORD environment variable
+  password: "your-mysql-password"
 
 storage:
   # Directory for browser session data

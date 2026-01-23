@@ -7,8 +7,7 @@ class Config:
     """Configuration loader for Kindle Deals Monitor.
 
     Loads configuration from a YAML file and provides dot notation access
-    to nested values. Also loads sensitive values (passwords) from
-    environment variables.
+    to nested values.
     """
 
     def __init__(self, config_path: str):
@@ -30,27 +29,6 @@ class Config:
 
         if self._config is None:
             self._config = {}
-
-        # Load passwords from environment variables
-        self._load_environment_secrets()
-
-    def _load_environment_secrets(self):
-        """Load sensitive configuration from environment variables."""
-        # MySQL password from MYSQL_PASSWORD environment variable
-        # Only override config file if environment variable is set
-        mysql_password = os.environ.get('MYSQL_PASSWORD')
-        if mysql_password:
-            if 'database' not in self._config:
-                self._config['database'] = {}
-            self._config['database']['password'] = mysql_password
-
-        # Email password from KINDLE_DEALS_PASSWORD environment variable
-        # Only override config file if environment variable is set
-        email_password = os.environ.get('KINDLE_DEALS_PASSWORD')
-        if email_password:
-            if 'email' not in self._config:
-                self._config['email'] = {}
-            self._config['email']['password'] = email_password
 
     def get(self, key: str, default: Any = None) -> Any:
         """
@@ -84,17 +62,15 @@ class Config:
         return value
 
     def get_email_password(self) -> str:
-        """Get email password from config or environment variable"""
-        # Try config first, then environment variable
-        password = self.get('email.password') or os.environ.get('KINDLE_DEALS_PASSWORD')
+        """Get email password from config.yaml"""
+        password = self.get('email.password')
         if not password:
-            raise ValueError("Email password not set in config.yaml or KINDLE_DEALS_PASSWORD environment variable")
+            raise ValueError("Email password not set in config.yaml (email.password)")
         return password
 
     def get_mysql_password(self) -> str:
-        """Get MySQL password from config or environment variable"""
-        # Try config first, then environment variable
-        password = self.get('database.password') or os.environ.get('MYSQL_PASSWORD')
+        """Get MySQL password from config.yaml"""
+        password = self.get('database.password')
         if not password:
-            raise ValueError("MySQL password not set in config.yaml or MYSQL_PASSWORD environment variable")
+            raise ValueError("MySQL password not set in config.yaml (database.password)")
         return password
