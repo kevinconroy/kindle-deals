@@ -6,7 +6,8 @@ from typing import List, Dict, Any
 
 from config import Config
 from database import Database
-from amazon.paapi import AmazonAPI
+from amazon_paapi import AmazonApi
+from amazon_paapi.models.regions import Country
 from deal_logic import should_notify
 from email_notifier import EmailNotifier
 
@@ -29,11 +30,14 @@ def calculate_savings_percent(current_price: float, list_price: float) -> int:
 def check_deals(config: Config, db: Database, target_asin: str = None):
     """Check for deals on tracked books using Amazon Product Advertising API"""
     # Initialize Amazon API
-    api = AmazonAPI(
-        access_key=config.get('amazon.api_access_key'),
-        secret_key=config.get('amazon.api_secret_key'),
-        partner_tag=config.get('amazon.api_associate_tag'),
-        country=config.get('amazon.api_region', 'US')
+    region = config.get('amazon.api_region', 'US')
+    country = getattr(Country, region, Country.US)
+
+    api = AmazonApi(
+        key=config.get('amazon.api_access_key'),
+        secret=config.get('amazon.api_secret_key'),
+        tag=config.get('amazon.api_associate_tag'),
+        country=country
     )
 
     # Get books to check
@@ -54,50 +58,51 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
 
         try:
             # Get item info from API
-            items = api.get_items([asin])
+            items = api.get_items(asin)
 
             current_price = None
             list_price = None
             author = book['author']
             cover_url = book['cover_url']
 
-            if items and items[0]:
+            if items and len(items) > 0:
                 item = items[0]
 
                 # Update metadata if book title is missing
                 if not book['title']:
                     # Extract title
-                    if hasattr(item, 'item_info') and hasattr(item.item_info, 'title'):
+                    if item.item_info and item.item_info.title:
                         title = item.item_info.title.display_value
                         logger.info(f"Updated title from API: {title}")
 
                     # Extract author
-                    if hasattr(item, 'item_info') and hasattr(item.item_info, 'by_line_info'):
-                        if hasattr(item.item_info.by_line_info, 'contributors') and item.item_info.by_line_info.contributors:
+                    if item.item_info and item.item_info.by_line_info:
+                        if item.item_info.by_line_info.contributors:
                             author = item.item_info.by_line_info.contributors[0].name
                             logger.info(f"Updated author from API: {author}")
 
                     # Extract cover URL
-                    if hasattr(item, 'images') and hasattr(item.images, 'primary'):
-                        if hasattr(item.images.primary, 'large'):
-                            cover_url = item.images.primary.large.url
-                            logger.info(f"Updated cover URL from API")
+                    if item.images and item.images.primary and item.images.primary.large:
+                        cover_url = item.images.primary.large.url
+                        logger.info(f"Updated cover URL from API")
 
                     # Update database with metadata
                     db.update_book_metadata(asin, title, author, cover_url)
 
                 # Extract Kindle price from offers
-                if hasattr(item, 'offers') and hasattr(item.offers, 'listings') and item.offers.listings:
+                if item.offers and item.offers.listings:
                     listing = item.offers.listings[0]
-                    if hasattr(listing, 'price') and listing.price:
+                    if listing.price:
                         current_price = listing.price.amount
-                    if hasattr(listing, 'saving_basis') and listing.saving_basis:
+                    if listing.saving_basis:
                         list_price = listing.saving_basis.amount
                     else:
                         list_price = current_price
 
         except Exception as e:
             logger.error(f"Failed to process {asin}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
 
         # Save price history
