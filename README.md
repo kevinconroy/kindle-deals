@@ -4,13 +4,19 @@ Monitor Kindle samples for price deals and receive email notifications.
 
 ## Setup
 
+One-line setup:
+
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
-playwright install chromium
-python setup.py
+./setup.sh
 ```
+
+Then activate the virtual environment:
+
+```bash
+source venv/bin/activate
+```
+
+After setup, edit `config.yaml` with your settings (MySQL credentials, email, Amazon API keys).
 
 ## Usage
 
