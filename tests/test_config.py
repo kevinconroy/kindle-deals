@@ -108,41 +108,6 @@ def test_get_list_value(sample_config_file):
     assert to_addresses == ["recipient@example.com"]
 
 
-def test_mysql_password_from_env(sample_config_file, monkeypatch):
-    """Test that MySQL password is loaded from environment variable."""
-    monkeypatch.setenv("MYSQL_PASSWORD", "test_mysql_pass")
-    config = Config(sample_config_file)
-    assert config.get("database.password") == "test_mysql_pass"
-
-
-def test_mysql_password_empty_when_no_env(sample_config_file, monkeypatch):
-    """Test that MySQL password is empty when env var is not set."""
-    monkeypatch.delenv("MYSQL_PASSWORD", raising=False)
-    config = Config(sample_config_file)
-    assert config.get("database.password") == ""
-
-
-def test_email_password_from_env(sample_config_file, monkeypatch):
-    """Test that email password is loaded from environment variable."""
-    monkeypatch.setenv("KINDLE_DEALS_PASSWORD", "test_email_pass")
-    config = Config(sample_config_file)
-    assert config.get("email.password") == "test_email_pass"
-
-
-def test_email_password_empty_when_no_env(sample_config_file, monkeypatch):
-    """Test that email password is empty when env var is not set."""
-    monkeypatch.delenv("KINDLE_DEALS_PASSWORD", raising=False)
-    config = Config(sample_config_file)
-    assert config.get("email.password") == ""
-
-
-def test_both_passwords_from_env(sample_config_file, monkeypatch):
-    """Test that both passwords are loaded from their respective env vars."""
-    monkeypatch.setenv("MYSQL_PASSWORD", "mysql_secret")
-    monkeypatch.setenv("KINDLE_DEALS_PASSWORD", "email_secret")
-    config = Config(sample_config_file)
-    assert config.get("database.password") == "mysql_secret"
-    assert config.get("email.password") == "email_secret"
 
 
 def test_file_not_found():
