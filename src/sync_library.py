@@ -54,9 +54,9 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
 
                 logger.info("Login complete, saving session...")
 
-            # Navigate to Amazon My Books
-            logger.info("Navigating to Amazon My Books...")
-            page.goto("https://www.amazon.com/hz/mycd/myx")
+            # Navigate directly to Books & Samples page
+            logger.info("Navigating to Amazon Books & Samples...")
+            page.goto("https://www.amazon.com/hz/mycd/digital-console/contentlist/booksSamples/dateDsc?pageNumber=1")
 
             # Wait for page to load
             page.wait_for_load_state('networkidle')
@@ -65,20 +65,6 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
             if page.locator('input[name="email"]').count() > 0:
                 logger.error("Not logged in. Please run with --login to log in and save your session.")
                 sys.exit(2)
-
-            # Filter for samples using the dropdown
-            logger.info("Filtering to view samples...")
-            try:
-                # Click the View dropdown and select "Samples"
-                view_dropdown = page.locator('select.ContentSubCategoryDropDown')
-                if view_dropdown.count() > 0:
-                    view_dropdown.select_option('Sample')
-                    page.wait_for_load_state('networkidle')
-                    logger.info("Filtered to samples view")
-                else:
-                    logger.warning("Could not find view filter dropdown")
-            except Exception as e:
-                logger.warning(f"Could not filter to samples: {e}")
 
             # Scrape all pages
             samples = []
