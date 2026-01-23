@@ -37,16 +37,20 @@ class Config:
     def _load_environment_secrets(self):
         """Load sensitive configuration from environment variables."""
         # MySQL password from MYSQL_PASSWORD environment variable
-        mysql_password = os.environ.get('MYSQL_PASSWORD', '')
-        if 'database' not in self._config:
-            self._config['database'] = {}
-        self._config['database']['password'] = mysql_password
+        # Only override config file if environment variable is set
+        mysql_password = os.environ.get('MYSQL_PASSWORD')
+        if mysql_password:
+            if 'database' not in self._config:
+                self._config['database'] = {}
+            self._config['database']['password'] = mysql_password
 
         # Email password from KINDLE_DEALS_PASSWORD environment variable
-        email_password = os.environ.get('KINDLE_DEALS_PASSWORD', '')
-        if 'email' not in self._config:
-            self._config['email'] = {}
-        self._config['email']['password'] = email_password
+        # Only override config file if environment variable is set
+        email_password = os.environ.get('KINDLE_DEALS_PASSWORD')
+        if email_password:
+            if 'email' not in self._config:
+                self._config['email'] = {}
+            self._config['email']['password'] = email_password
 
     def get(self, key: str, default: Any = None) -> Any:
         """
