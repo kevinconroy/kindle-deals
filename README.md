@@ -1,56 +1,32 @@
 # Kindle Deals Monitor
 
-A Python-based tool to monitor Kindle book samples for price changes and deals.
-
-## Features
-
-- Automated monitoring of Kindle book samples
-- Price tracking and deal detection
-- Screenshot capture for visual verification
-- Configurable check intervals
-- YAML-based configuration
+Monitor Kindle samples for price deals and receive email notifications.
 
 ## Setup
 
-1. Create a virtual environment:
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-2. Install dependencies:
-```bash
 pip install -r requirements.txt
-```
-
-3. Install Playwright browsers:
-```bash
 playwright install chromium
-```
-
-4. Create a `config.yaml` file (see Configuration section)
-
-## Configuration
-
-Create a `config.yaml` file with your monitoring settings:
-
-```yaml
-check_interval: 3600  # seconds
-books:
-  - url: "https://www.amazon.com/..."
-    title: "Book Title"
+python setup.py
 ```
 
 ## Usage
 
-Run the monitor:
 ```bash
-python -m src.main
+# Collect samples
+python src/collect_samples.py
+
+# Check for deals
+python src/check_deals.py
+
+# Test email notification
+python src/send_notification.py --test
 ```
 
-## Development
+## Configuration
 
-Run tests:
-```bash
-pytest
-```
+Copy `config.yaml.example` to `config.yaml` and update with your settings.
+
+Set environment variable: `KINDLE_DEALS_PASSWORD` for email SMTP password.
