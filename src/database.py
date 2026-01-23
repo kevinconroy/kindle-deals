@@ -35,15 +35,21 @@ class Database:
 
     def _create_database_if_not_exists(self):
         """Create the database if it doesn't exist."""
-        conn = mysql.connector.connect(
-            host=self.host,
-            user=self.user,
-            password=self.password
-        )
-        cursor = conn.cursor()
-        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {self.database}")
-        cursor.close()
-        conn.close()
+        conn = None
+        cursor = None
+        try:
+            conn = mysql.connector.connect(
+                host=self.host,
+                user=self.user,
+                password=self.password
+            )
+            cursor = conn.cursor()
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{self.database}`")
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
     def _create_tables(self):
         """Create all required tables if they don't exist."""
@@ -99,7 +105,7 @@ class Database:
         """
         cursor = self.conn.cursor()
         cursor.execute("""
-            INSERT INTO books (asin, title, author, cover_url, date_added, is_active)
+            INSERT IGNORE INTO books (asin, title, author, cover_url, date_added, is_active)
             VALUES (%s, %s, %s, %s, %s, 1)
         """, (asin, title, author, cover_url, datetime.now()))
         self.conn.commit()
