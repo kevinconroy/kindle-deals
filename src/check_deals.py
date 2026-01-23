@@ -52,18 +52,50 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
         logger.info(f"Checking {book['title']}...")
 
         try:
-            # Get item info from API
+            # Get item info from API (including metadata)
             items = api.get_items(
                 [asin],
                 item_ids_type='ASIN',
-                resources=['Offers.Listings.Price', 'Offers.Listings.SavingBasis']
+                resources=[
+                    'ItemInfo.Title',
+                    'ItemInfo.ByLineInfo',
+                    'Images.Primary.Large',
+                    'Offers.Listings.Price',
+                    'Offers.Listings.SavingBasis'
+                ]
             )
 
             current_price = None
             list_price = None
+            title = book['title']
+            author = book['author']
+            cover_url = book['cover_url']
 
             if items and items[0]:
                 item = items[0]
+
+                # Update metadata if book title is just the ASIN (placeholder)
+                if title == asin:
+                    # Extract title
+                    if item.item_info and item.item_info.title and item.item_info.title.display_value:
+                        title = item.item_info.title.display_value
+                        logger.info(f"Updated title from API: {title}")
+
+                    # Extract author
+                    if item.item_info and item.item_info.by_line_info and item.item_info.by_line_info.contributors:
+                        contributors = item.item_info.by_line_info.contributors
+                        if contributors and len(contributors) > 0:
+                            author = contributors[0].name
+                            logger.info(f"Updated author from API: {author}")
+
+                    # Extract cover URL
+                    if item.images and item.images.primary and item.images.primary.large:
+                        cover_url = item.images.primary.large.url
+                        logger.info(f"Updated cover URL from API")
+
+                    # Update database with metadata
+                    db.update_book_metadata(asin, title, author, cover_url)
+
                 # Extract Kindle price from offers
                 if item.offers and item.offers.listings:
                     listing = item.offers.listings[0]
@@ -74,7 +106,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
             db.add_price_history(asin, current_price, list_price)
 
             if current_price is None or list_price is None:
-                logger.warning(f"Could not determine price for {book['title']}")
+                logger.warning(f"Could not determine price for {title}")
                 continue
 
             # Check if should notify
@@ -86,9 +118,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
 
                 deal = {
                     'asin': asin,
-                    'title': book['title'],
-                    'author': book['author'],
-                    'cover_url': book['cover_url'],
+                    'title': title,
+                    'author': author,
+                    'cover_url': cover_url,
                     'current_price': current_price,
                     'list_price': list_price,
                     'savings_percent': savings_percent
@@ -97,7 +129,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
 
                 # Record notification
                 db.add_notification(asin, current_price)
-                logger.info(f"Deal found: {book['title']} - ${current_price:.2f} ({savings_percent}% off)")
+                logger.info(f"Deal found: {title} - ${current_price:.2f} ({savings_percent}% off)")
 
         except Exception as e:
             logger.error(f"Failed to get price for {asin}: {e}")

@@ -116,33 +116,18 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
 
                         asin = div_id.replace('content-title-', '')
 
-                        # Extract title
-                        title_element = div.locator('.a-size-base-plus').first
-                        title = title_element.inner_text().strip() if title_element.count() > 0 else None
-
-                        # Extract author
-                        author_element = div.locator('.a-size-small.a-color-secondary').first
-                        author = author_element.inner_text().strip() if author_element.count() > 0 else None
-
-                        # Extract cover URL
-                        cover_element = div.locator('img').first
-                        cover_url = cover_element.get_attribute('src') if cover_element.count() > 0 else None
-
-                        if not title:
-                            logger.warning(f"Skipping book without title: {asin}")
-                            continue
-
+                        # Store just the ASIN - title/author will be fetched via API later
                         sample = {
                             'asin': asin,
-                            'title': title,
-                            'author': author,
-                            'cover_url': cover_url
+                            'title': asin,  # Temporary placeholder, will be updated by check_deals.py
+                            'author': None,
+                            'cover_url': None
                         }
                         samples.append(sample)
-                        logger.info(f"Found: {title} by {author} (ASIN: {asin})")
+                        logger.info(f"Found ASIN: {asin}")
 
                     except Exception as e:
-                        logger.warning(f"Failed to extract book data: {e}")
+                        logger.warning(f"Failed to extract ASIN: {e}")
                         continue
 
             logger.info(f"Total books found: {len(samples)}")

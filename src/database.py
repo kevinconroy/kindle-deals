@@ -125,6 +125,25 @@ class Database:
         result = cursor.fetchone()
         return result
 
+    def update_book_metadata(self, asin: str, title: str, author: str = None,
+                            cover_url: str = None) -> None:
+        """
+        Update book metadata (title, author, cover_url).
+
+        Args:
+            asin: Amazon Standard Identification Number
+            title: Book title
+            author: Book author (optional)
+            cover_url: URL to book cover image (optional)
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE books
+            SET title = %s, author = %s, cover_url = %s
+            WHERE asin = %s
+        """, (title, author, cover_url, asin))
+        self.conn.commit()
+
     def add_price_history(self, asin: str, price: float,
                          list_price: float = None) -> None:
         """
