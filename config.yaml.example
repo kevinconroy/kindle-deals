@@ -23,7 +23,7 @@ database:
   host: "localhost"
   user: "root"
   database: "kindle_deals"
-  # Password should be set via MYSQL_PASSWORD environment variable
+  password: "your-mysql-password"  # Or set via MYSQL_PASSWORD environment variable
 
 storage:
   # Directory for browser session data
@@ -31,14 +31,15 @@ storage:
 
 email:
   # SMTP server settings
-  smtp_server: "smtp.gmail.com"
+  smtp_server: "smtp.mail.me.com"  # For iCloud
   smtp_port: 587
 
   # Email addresses
-  from_address: "your-email@gmail.com"
-  to_address: "recipient@example.com"
+  from_address: "your-email@icloud.com"
+  to_address: "your-email@icloud.com"
 
-  # Password should be set via KINDLE_DEALS_PASSWORD environment variable
+  # Email password (app-specific password for iCloud)
+  password: "xxxx-xxxx-xxxx-xxxx"  # Or set via KINDLE_DEALS_PASSWORD environment variable
 
 deals:
   # Maximum price to consider as a deal (in dollars)
