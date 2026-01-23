@@ -4,26 +4,9 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-venv/
-ENV/
 env/
+venv/
+.venv/
 
 # Testing
 .pytest_cache/
@@ -35,11 +18,10 @@ htmlcov/
 .idea/
 *.swp
 *.swo
-*~
 
 # Project specific
-playwright-state/
-screenshots/
-samples/
-*.log
 config.yaml
+*.db
+*.db-journal
+.kindle-deals/
+logs/
