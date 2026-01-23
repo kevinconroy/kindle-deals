@@ -70,7 +70,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
             logger.info("Filtering to view samples...")
             try:
                 # Click the View dropdown and select "Samples"
-                view_dropdown = page.locator('select#myx-content-type-filter')
+                view_dropdown = page.locator('select.ContentSubCategoryDropDown')
                 if view_dropdown.count() > 0:
                     view_dropdown.select_option('Sample')
                     page.wait_for_load_state('networkidle')
