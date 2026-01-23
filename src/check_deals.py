@@ -34,16 +34,30 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
     try:
         # Navigate to product page
         url = f"https://www.amazon.com/dp/{asin}"
-        page.goto(url)
-        page.wait_for_load_state('networkidle')
+        logger.debug(f"Navigating to {url}")
+        page.goto(url, wait_until='domcontentloaded', timeout=15000)
+
+        # Wait a bit for dynamic content, but don't wait for networkidle (can hang)
+        page.wait_for_timeout(2000)
+
+        # Check if we hit a CAPTCHA or login page
+        if page.locator('input[name="email"]').count() > 0:
+            logger.error(f"Hit login page for {asin} - session may have expired")
+            return None
+
+        if page.locator('form[action*="captcha"]').count() > 0:
+            logger.error(f"Hit CAPTCHA for {asin} - may need to slow down")
+            return None
 
         # Extract title
         title = None
         try:
             title_elem = page.locator('#productTitle').first
-            if title_elem.count() > 0:
-                title = title_elem.inner_text().strip()
-        except Exception:
+            title_elem.wait_for(state='visible', timeout=3000)
+            title = title_elem.inner_text().strip()
+            logger.debug(f"Found title: {title}")
+        except Exception as e:
+            logger.debug(f"Could not find title: {e}")
             pass
 
         # Extract author
@@ -52,7 +66,9 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
             author_elem = page.locator('.author .contributorNameID').first
             if author_elem.count() > 0:
                 author = author_elem.inner_text().strip()
-        except Exception:
+                logger.debug(f"Found author: {author}")
+        except Exception as e:
+            logger.debug(f"Could not find author: {e}")
             pass
 
         # Extract cover image
@@ -61,7 +77,9 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
             img_elem = page.locator('#ebooksImgBlkFront, #imgBlkFront').first
             if img_elem.count() > 0:
                 cover_url = img_elem.get_attribute('src')
-        except Exception:
+                logger.debug(f"Found cover: {cover_url}")
+        except Exception as e:
+            logger.debug(f"Could not find cover: {e}")
             pass
 
         # Extract Kindle price
@@ -75,15 +93,23 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
                 '.a-price .a-offscreen'
             ]
             for selector in price_selectors:
-                price_elem = page.locator(selector).first
-                if price_elem.count() > 0:
-                    price_text = price_elem.inner_text().strip()
-                    # Extract number from price text (e.g., "$3.99" -> 3.99)
-                    match = re.search(r'\$?(\d+\.\d{2})', price_text)
-                    if match:
-                        current_price = float(match.group(1))
-                        break
-        except Exception:
+                try:
+                    price_elem = page.locator(selector).first
+                    if price_elem.count() > 0:
+                        price_text = price_elem.inner_text().strip()
+                        # Extract number from price text (e.g., "$3.99" -> 3.99)
+                        match = re.search(r'\$?(\d+\.\d{2})', price_text)
+                        if match:
+                            current_price = float(match.group(1))
+                            logger.debug(f"Found current price: ${current_price} using {selector}")
+                            break
+                except Exception:
+                    continue
+
+            if not current_price:
+                logger.debug(f"Could not find current price for {asin}")
+        except Exception as e:
+            logger.debug(f"Error extracting current price: {e}")
             pass
 
         # Extract list price (original price)
@@ -95,7 +121,9 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
                 match = re.search(r'\$?(\d+\.\d{2})', price_text)
                 if match:
                     list_price = float(match.group(1))
-        except Exception:
+                    logger.debug(f"Found list price: ${list_price}")
+        except Exception as e:
+            logger.debug(f"Error extracting list price: {e}")
             pass
 
         # If no list price, use current price
