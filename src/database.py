@@ -1,0 +1,209 @@
+import mysql.connector
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+
+
+class Database:
+    def __init__(self, host: str, user: str, password: str, database: str):
+        """
+        Initialize database connection.
+
+        Args:
+            host: MySQL server host
+            user: MySQL username
+            password: MySQL password
+            database: Database name
+        """
+        self.host = host
+        self.user = user
+        self.password = password
+        self.database = database
+
+        # Create database if it doesn't exist
+        self._create_database_if_not_exists()
+
+        # Connect to the database
+        self.conn = mysql.connector.connect(
+            host=self.host,
+            user=self.user,
+            password=self.password,
+            database=self.database
+        )
+
+        # Create tables
+        self._create_tables()
+
+    def _create_database_if_not_exists(self):
+        """Create the database if it doesn't exist."""
+        conn = mysql.connector.connect(
+            host=self.host,
+            user=self.user,
+            password=self.password
+        )
+        cursor = conn.cursor()
+        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {self.database}")
+        cursor.close()
+        conn.close()
+
+    def _create_tables(self):
+        """Create all required tables if they don't exist."""
+        cursor = self.conn.cursor()
+
+        # Books table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS books (
+                asin VARCHAR(20) PRIMARY KEY,
+                title VARCHAR(500) NOT NULL,
+                author VARCHAR(255),
+                cover_url VARCHAR(1000),
+                date_added DATETIME NOT NULL,
+                is_active TINYINT(1) DEFAULT 1
+            )
+        """)
+
+        # Price history table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS price_history (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                asin VARCHAR(20) NOT NULL,
+                price DECIMAL(10,2),
+                list_price DECIMAL(10,2),
+                check_date DATETIME NOT NULL,
+                FOREIGN KEY (asin) REFERENCES books(asin)
+            )
+        """)
+
+        # Notifications table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                asin VARCHAR(20) NOT NULL,
+                notified_price DECIMAL(10,2) NOT NULL,
+                notified_date DATETIME NOT NULL,
+                FOREIGN KEY (asin) REFERENCES books(asin)
+            )
+        """)
+
+        self.conn.commit()
+
+    def add_book(self, asin: str, title: str, author: str = None,
+                 cover_url: str = None) -> None:
+        """
+        Add a new book to the database.
+
+        Args:
+            asin: Amazon Standard Identification Number
+            title: Book title
+            author: Book author (optional)
+            cover_url: URL to book cover image (optional)
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO books (asin, title, author, cover_url, date_added, is_active)
+            VALUES (%s, %s, %s, %s, %s, 1)
+        """, (asin, title, author, cover_url, datetime.now()))
+        self.conn.commit()
+
+    def get_book(self, asin: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a book by ASIN.
+
+        Args:
+            asin: Amazon Standard Identification Number
+
+        Returns:
+            Dictionary with book data or None if not found
+        """
+        cursor = self.conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM books WHERE asin = %s", (asin,))
+        result = cursor.fetchone()
+        return result
+
+    def add_price_history(self, asin: str, price: float,
+                         list_price: float = None) -> None:
+        """
+        Add a price history entry for a book.
+
+        Args:
+            asin: Amazon Standard Identification Number
+            price: Current price
+            list_price: Original list price (optional)
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO price_history (asin, price, list_price, check_date)
+            VALUES (%s, %s, %s, %s)
+        """, (asin, price, list_price, datetime.now()))
+        self.conn.commit()
+
+    def get_latest_price(self, asin: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the most recent price check for a book.
+
+        Args:
+            asin: Amazon Standard Identification Number
+
+        Returns:
+            Dictionary with price data or None if no history exists
+        """
+        cursor = self.conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT * FROM price_history
+            WHERE asin = %s
+            ORDER BY id DESC
+            LIMIT 1
+        """, (asin,))
+        result = cursor.fetchone()
+        return result
+
+    def add_notification(self, asin: str, notified_price: float) -> None:
+        """
+        Add a notification record for a book.
+
+        Args:
+            asin: Amazon Standard Identification Number
+            notified_price: Price at which notification was sent
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO notifications (asin, notified_price, notified_date)
+            VALUES (%s, %s, %s)
+        """, (asin, notified_price, datetime.now()))
+        self.conn.commit()
+
+    def get_last_notification(self, asin: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the most recent notification for a book.
+
+        Args:
+            asin: Amazon Standard Identification Number
+
+        Returns:
+            Dictionary with notification data or None if no notifications exist
+        """
+        cursor = self.conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT * FROM notifications
+            WHERE asin = %s
+            ORDER BY id DESC
+            LIMIT 1
+        """, (asin,))
+        result = cursor.fetchone()
+        return result
+
+    def get_active_books(self) -> List[Dict[str, Any]]:
+        """
+        Get all active books.
+
+        Returns:
+            List of dictionaries with book data
+        """
+        cursor = self.conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM books WHERE is_active = 1")
+        results = cursor.fetchall()
+        return results
+
+    def close(self):
+        """Close the database connection."""
+        if self.conn:
+            self.conn.close()
