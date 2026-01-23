@@ -117,13 +117,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                         asin = div_id.replace('content-title-', '')
 
                         # Store just the ASIN - title/author will be fetched via API later
-                        sample = {
-                            'asin': asin,
-                            'title': asin,  # Temporary placeholder, will be updated by check_deals.py
-                            'author': None,
-                            'cover_url': None
-                        }
-                        samples.append(sample)
+                        samples.append({'asin': asin})
                         logger.info(f"Found ASIN: {asin}")
 
                     except Exception as e:
@@ -137,11 +131,22 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                 return
 
             # Add books to database
+            logger.info(f"Adding {len(samples)} books to database...")
+            added_count = 0
+            skipped_count = 0
             for sample in samples:
-                db.add_book(**sample)
-                logger.info(f"Added to database: {sample['title']}")
+                try:
+                    was_added = db.add_book(**sample)
+                    if was_added:
+                        added_count += 1
+                        logger.debug(f"Added ASIN {sample['asin']} to database")
+                    else:
+                        skipped_count += 1
+                        logger.debug(f"Skipped ASIN {sample['asin']} (already exists)")
+                except Exception as e:
+                    logger.error(f"Failed to add ASIN {sample['asin']} to database: {e}")
 
-            logger.info(f"Successfully synced {len(samples)} books")
+            logger.info(f"Successfully added {added_count} new books, {skipped_count} already existed")
 
         except Exception as e:
             logger.error(f"Failed to sync library: {e}")

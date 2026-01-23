@@ -92,23 +92,32 @@ class Database:
 
         self.conn.commit()
 
-    def add_book(self, asin: str, title: str, author: str = None,
+    def add_book(self, asin: str, title: str = None, author: str = None,
                  cover_url: str = None) -> None:
         """
         Add a new book to the database.
 
         Args:
             asin: Amazon Standard Identification Number
-            title: Book title
+            title: Book title (optional, defaults to ASIN if not provided)
             author: Book author (optional)
             cover_url: URL to book cover image (optional)
         """
+        # Use ASIN as title if title not provided
+        if not title:
+            title = asin
+
         cursor = self.conn.cursor()
         cursor.execute("""
             INSERT IGNORE INTO books (asin, title, author, cover_url, date_added, is_active)
             VALUES (%s, %s, %s, %s, %s, 1)
         """, (asin, title, author, cover_url, datetime.now()))
         self.conn.commit()
+
+        # Log how many rows were affected (0 if already exists due to INSERT IGNORE)
+        if cursor.rowcount == 0:
+            return False  # Already existed
+        return True  # Newly added
 
     def get_book(self, asin: str) -> Optional[Dict[str, Any]]:
         """
