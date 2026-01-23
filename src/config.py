@@ -67,10 +67,3 @@ class Config:
         if not password:
             raise ValueError("Email password not set in config.yaml (email.password)")
         return password
-
-    def get_mysql_password(self) -> str:
-        """Get MySQL password from config.yaml"""
-        password = self.get('database.password')
-        if not password:
-            raise ValueError("MySQL password not set in config.yaml (database.password)")
-        return password

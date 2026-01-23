@@ -117,7 +117,7 @@ def main():
         db = Database(
             host=config.get('database.host'),
             user=config.get('database.user'),
-            password=config.get_mysql_password(),
+            password=config.get('database.password'),
             database=config.get('database.database')
         )
         sync_library(config, db, dry_run=args.dry_run)

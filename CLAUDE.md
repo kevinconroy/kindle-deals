@@ -10,15 +10,16 @@ Kindle Deals Monitor is a Python application that tracks price changes on Kindle
 
 ### Development Setup
 ```bash
-# Install dependencies
-pip install -e .
+# One-line setup
+./setup.sh
 
-# Set required environment variables
-export MYSQL_PASSWORD="your-mysql-password"
-export KINDLE_DEALS_PASSWORD="your-email-password"
+# Or manually:
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
+python setup.py
 
-# Copy and configure settings
-cp config.yaml.example config.yaml
 # Edit config.yaml with your settings
 ```
 
@@ -75,7 +76,7 @@ The application consists of five main modules:
 3. **config.py** - Configuration management
    - Loads settings from config.yaml
    - Provides dot-notation access (e.g., config.get("amazon.domain"))
-   - Loads passwords from environment variables (MYSQL_PASSWORD, KINDLE_DEALS_PASSWORD)
+   - All configuration including passwords stored in config.yaml
    - Validates required settings
 
 4. **email_notifier.py** - Email notification system
@@ -177,18 +178,18 @@ Configuration is stored in `config.yaml` (created from `config.yaml.example`).
 **database** - MySQL connection settings
 - `host`: MySQL server host (default: "localhost")
 - `user`: MySQL username (default: "root")
+- `password`: MySQL password
 - `database`: Database name (default: "kindle_deals")
-- Password loaded from MYSQL_PASSWORD environment variable
 
 **storage** - File storage settings
 - `browser_session_path`: Directory for Playwright browser session data
 
 **email** - SMTP email settings
-- `smtp_host`: SMTP server (e.g., "smtp.gmail.com")
+- `smtp_server`: SMTP server (e.g., "smtp.mail.me.com")
 - `smtp_port`: SMTP port (e.g., 587 for TLS)
 - `from_address`: Sender email address
-- `to_addresses`: List of recipient email addresses
-- Password loaded from KINDLE_DEALS_PASSWORD environment variable
+- `to_address`: Recipient email address
+- `password`: Email password (app-specific password for iCloud/Gmail)
 - `subject_template`: Email subject template
 
 **deals** - Deal detection criteria
@@ -202,15 +203,6 @@ Configuration is stored in `config.yaml` (created from `config.yaml.example`).
 - `element_timeout`: Element wait timeout in milliseconds
 - `check_delay`: Delay between checking different books
 - `action_delay`: Delay between page actions
-
-### Environment Variables
-
-Two environment variables must be set:
-
-1. **MYSQL_PASSWORD** - Password for MySQL database connection
-2. **KINDLE_DEALS_PASSWORD** - Password for email SMTP authentication
-
-These are loaded by the Config class and should never be stored in config.yaml.
 
 ## Testing
 
@@ -229,7 +221,7 @@ Tests are located in the `tests/` directory and use pytest:
 
 - **test_config.py** - Configuration module tests
   - Tests YAML loading and dot-notation access
-  - Tests environment variable integration
+  - Tests password retrieval methods
 
 - **test_email_notifier.py** - Email notifier tests
   - Tests HTML email generation
@@ -238,7 +230,7 @@ Tests are located in the `tests/` directory and use pytest:
 ### Test Requirements
 
 - MySQL server must be running for database tests
-- MYSQL_PASSWORD environment variable must be set
+- config.yaml must be configured with MySQL credentials
 - Tests create and clean up a test database automatically
 - Use pytest fixtures for setup/teardown
 
@@ -295,7 +287,7 @@ When modifying the database schema:
 ### Common Patterns
 
 - Use context managers for database connections
-- Load sensitive data from environment variables
+- Store all configuration including passwords in config.yaml
 - Use logging for operational messages (not print statements)
 - Validate configuration on startup
 - Handle API errors gracefully with retries where appropriate
