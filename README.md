@@ -25,6 +25,7 @@ After setup, edit `config.yaml` with your settings (MySQL credentials, email, Am
 python src/sync_library.py --login
 
 # Sync your Kindle library (after login)
+# Note: Books removed from your samples list are automatically marked as inactive
 python src/sync_library.py
 
 # Check for deals

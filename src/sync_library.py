@@ -130,23 +130,43 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                 logger.info(f"DRY RUN: Would add {len(samples)} books to database")
                 return
 
+            # Get list of currently active books before syncing
+            active_books_before = {book['asin'] for book in db.get_active_books()}
+
             # Add books to database
             logger.info(f"Adding {len(samples)} books to database...")
             added_count = 0
             skipped_count = 0
+            synced_asins = set()
+
             for sample in samples:
                 try:
+                    asin = sample['asin']
+                    synced_asins.add(asin)
+
                     was_added = db.add_book(**sample)
                     if was_added:
                         added_count += 1
-                        logger.debug(f"Added ASIN {sample['asin']} to database")
+                        logger.debug(f"Added ASIN {asin} to database")
                     else:
                         skipped_count += 1
-                        logger.debug(f"Skipped ASIN {sample['asin']} (already exists)")
+                        logger.debug(f"Skipped ASIN {asin} (already exists)")
+
+                        # Reactivate if it was previously inactive
+                        db.reactivate_book(asin)
+
                 except Exception as e:
                     logger.error(f"Failed to add ASIN {sample['asin']} to database: {e}")
 
-            logger.info(f"Successfully added {added_count} new books, {skipped_count} already existed")
+            # Mark books as inactive if they're no longer in the samples list
+            removed_asins = active_books_before - synced_asins
+            if removed_asins:
+                logger.info(f"Marking {len(removed_asins)} books as inactive (no longer in samples)")
+                for asin in removed_asins:
+                    db.mark_book_inactive(asin)
+                    logger.debug(f"Marked {asin} as inactive")
+
+            logger.info(f"Successfully added {added_count} new books, {skipped_count} already existed, {len(removed_asins)} removed")
 
         except Exception as e:
             logger.error(f"Failed to sync library: {e}")

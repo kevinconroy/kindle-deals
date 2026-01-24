@@ -176,6 +176,21 @@ class Database:
         """, (asin,))
         self.conn.commit()
 
+    def reactivate_book(self, asin: str) -> None:
+        """
+        Mark a book as active (resume tracking).
+
+        Args:
+            asin: Amazon Standard Identification Number
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE books
+            SET is_active = 1
+            WHERE asin = %s
+        """, (asin,))
+        self.conn.commit()
+
     def add_price_history(self, asin: str, price: float,
                          list_price: float = None) -> None:
         """
