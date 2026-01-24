@@ -49,6 +49,25 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
             logger.error(f"Hit CAPTCHA for {asin} - may need to slow down")
             return None
 
+        # Check if book is already owned (has "Read Now" button)
+        read_now_selectors = [
+            'text="Read Now"',
+            'text="Read for Free"',
+            '#kindle-reader-button',
+            'a[href*="read/"]'
+        ]
+        for selector in read_now_selectors:
+            if page.locator(selector).count() > 0:
+                logger.info(f"Book {asin} already owned (found 'Read Now' button)")
+                return {
+                    'title': None,
+                    'author': None,
+                    'cover_url': None,
+                    'current_price': None,
+                    'list_price': None,
+                    'already_owned': True
+                }
+
         # Extract title
         title = None
         try:
@@ -178,6 +197,12 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
 
                     if not book_info:
                         logger.warning(f"Could not scrape info for {asin}")
+                        continue
+
+                    # Check if book is already owned
+                    if book_info.get('already_owned'):
+                        logger.info(f"Marking {title} as inactive (already owned)")
+                        db.mark_book_inactive(asin)
                         continue
 
                     current_price = book_info['current_price']

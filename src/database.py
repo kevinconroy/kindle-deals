@@ -161,6 +161,21 @@ class Database:
         """, (title, author, cover_url, asin))
         self.conn.commit()
 
+    def mark_book_inactive(self, asin: str) -> None:
+        """
+        Mark a book as inactive (no longer tracking).
+
+        Args:
+            asin: Amazon Standard Identification Number
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE books
+            SET is_active = 0
+            WHERE asin = %s
+        """, (asin,))
+        self.conn.commit()
+
     def add_price_history(self, asin: str, price: float,
                          list_price: float = None) -> None:
         """
