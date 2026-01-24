@@ -174,11 +174,14 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
     # Get books to check
     if target_asin:
         book = db.get_book(target_asin)
+        if book and book['is_active'] == 0:
+            logger.warning(f"Book {target_asin} is marked as inactive - skipping")
+            return
         books = [book] if book else []
     else:
         books = db.get_active_books()
 
-    logger.info(f"Checking {len(books)} books for deals...")
+    logger.info(f"Checking {len(books)} active books for deals...")
 
     deals_found = []
 
