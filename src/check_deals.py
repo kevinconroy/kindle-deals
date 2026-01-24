@@ -328,7 +328,8 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
         )
 
         html = EmailNotifier.generate_email_html(deals_found)
-        subject = f"Kindle Deals: {len(deals_found)} book(s) on sale!"
+        today = datetime.now().strftime('%Y-%m-%d')
+        subject = f"Kindle Deals {today}: {len(deals_found)} book(s) on sale!"
         to_address = config.get('email.to_address')
 
         notifier.send_email(to_address, subject, html)
@@ -390,7 +391,8 @@ def send_notification_for_recent_deals(config: Config, db: Database, hours: int 
     )
 
     html = EmailNotifier.generate_email_html(deals)
-    subject = f"Kindle Deals: {len(deals)} book(s) on sale!"
+    today = datetime.now().strftime('%Y-%m-%d')
+    subject = f"Kindle Deals {today}: {len(deals)} book(s) on sale!"
     to_address = config.get('email.to_address')
 
     notifier.send_email(to_address, subject, html)
