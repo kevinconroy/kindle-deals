@@ -142,8 +142,12 @@ class EmailNotifier:
             title = book['title']
             author = book.get('author', 'Unknown Author')
             cover_url = book.get('cover_url', '')
-            current_price = book['price']
-            list_price = book['list_price']
+            current_price = book.get('current_price') or book.get('price', 0)
+            list_price = book.get('list_price', 0)
+
+            # Handle free books (price could be 0 or None)
+            if current_price is None:
+                current_price = 0
 
             # Calculate savings percentage
             if list_price and list_price > 0:
@@ -178,11 +182,24 @@ class EmailNotifier:
                 <div class="book-author">by {author}</div>
 """
 
+            # Format price display
+            if current_price == 0:
+                price_display = "FREE"
+            else:
+                price_display = f"${current_price:.2f}"
+
             html += f"""
                 <div class="price-info">
-                    <span class="current-price">${current_price:.2f}</span>
+                    <span class="current-price">{price_display}</span>
+"""
+
+            if list_price > 0 and list_price != current_price:
+                html += f"""
                     <span class="list-price">${list_price:.2f}</span>
                     <span class="savings">Save {savings_percent}%</span>
+"""
+
+            html += f"""
                 </div>
                 <a href="{amazon_link}" class="buy-button">Buy now on Amazon</a>
             </div>

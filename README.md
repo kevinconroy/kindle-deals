@@ -30,6 +30,9 @@ python src/sync_library.py
 # Check for deals
 python src/check_deals.py
 
+# Send email for recent deals (without re-checking)
+python src/check_deals.py --send-notification
+
 # Test email notification
 python src/send_notification.py --test
 ```

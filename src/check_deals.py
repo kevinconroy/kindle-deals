@@ -191,12 +191,17 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
                         logger.info(f"Updated title from scrape: {title}")
                         db.update_book_metadata(asin, title, author, cover_url)
 
-                    # Save price history
-                    db.add_price_history(asin, current_price, list_price)
-
-                    if current_price is None or list_price is None:
+                    # Handle free books (price could be 0 or None)
+                    if current_price is None:
                         logger.warning(f"Could not determine price for {title}")
                         continue
+
+                    # If no list price, use current price
+                    if list_price is None:
+                        list_price = current_price
+
+                    # Save price history
+                    db.add_price_history(asin, current_price, list_price)
 
                     # Check if should notify
                     last_notification = db.get_last_notification(asin)
@@ -218,7 +223,12 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
 
                         # Record notification
                         db.add_notification(asin, current_price)
-                        logger.info(f"Deal found: {title} - ${current_price:.2f} ({savings_percent}% off)")
+
+                        # Log with proper formatting (handle free books)
+                        if current_price == 0:
+                            logger.info(f"Deal found: {title} - FREE (100% off)")
+                        else:
+                            logger.info(f"Deal found: {title} - ${current_price:.2f} ({savings_percent}% off)")
 
                     # Delay between checks to avoid rate limiting
                     time.sleep(check_delay / 1000)
@@ -253,11 +263,75 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
         logger.info("No deals found")
 
 
+def send_notification_for_recent_deals(config: Config, db: Database, hours: int = 24):
+    """Send email notification for recent deals found in the database"""
+    import mysql.connector
+
+    # Get recent notifications
+    cursor = db.conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT n.asin, n.notified_price, n.notified_date,
+               b.title, b.author, b.cover_url,
+               ph.list_price
+        FROM notifications n
+        JOIN books b ON n.asin = b.asin
+        LEFT JOIN price_history ph ON n.asin = ph.asin
+            AND ph.check_date = (
+                SELECT MAX(check_date) FROM price_history WHERE asin = n.asin
+            )
+        WHERE n.notified_date >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+        ORDER BY n.notified_date DESC
+    """, (hours,))
+
+    notifications = cursor.fetchall()
+
+    if not notifications:
+        logger.info(f"No deals found in the last {hours} hours")
+        return
+
+    # Convert to deals format
+    deals = []
+    for notif in notifications:
+        list_price = notif['list_price'] or notif['notified_price']
+        savings_percent = calculate_savings_percent(notif['notified_price'], list_price)
+
+        deals.append({
+            'asin': notif['asin'],
+            'title': notif['title'] or notif['asin'],
+            'author': notif['author'],
+            'cover_url': notif['cover_url'],
+            'current_price': notif['notified_price'],
+            'list_price': list_price,
+            'savings_percent': savings_percent
+        })
+
+    # Send email
+    logger.info(f"Sending email for {len(deals)} recent deals...")
+
+    notifier = EmailNotifier(
+        smtp_server=config.get('email.smtp_server'),
+        smtp_port=config.get('email.smtp_port'),
+        from_address=config.get('email.from_address'),
+        password=config.get_email_password()
+    )
+
+    html = EmailNotifier.generate_email_html(deals)
+    subject = f"Kindle Deals: {len(deals)} book(s) on sale!"
+    to_address = config.get('email.to_address')
+
+    notifier.send_email(to_address, subject, html)
+    logger.info("Email sent successfully")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Check for Kindle deals')
     parser.add_argument('--config', default='config.yaml', help='Path to config file')
     parser.add_argument('--asin', help='Check specific ASIN')
     parser.add_argument('--verbose', action='store_true', help='Verbose output')
+    parser.add_argument('--send-notification', action='store_true',
+                        help='Send email for recent deals without checking prices')
+    parser.add_argument('--hours', type=int, default=24,
+                        help='Hours to look back for recent deals (default: 24)')
 
     args = parser.parse_args()
 
@@ -273,13 +347,20 @@ def main():
             password=config.get('database.password'),
             database=config.get('database.database')
         )
-        check_deals(config, db, target_asin=args.asin)
+
+        if args.send_notification:
+            send_notification_for_recent_deals(config, db, args.hours)
+        else:
+            check_deals(config, db, target_asin=args.asin)
+
         db.close()
 
         sys.exit(0)
 
     except Exception as e:
         logger.error(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
