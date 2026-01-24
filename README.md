@@ -29,8 +29,12 @@ python src/sync_library.py --login
 python src/sync_library.py
 
 # Check for deals
+# Note: Skips books already checked today (after 3 AM Eastern)
 # Note: Books already owned (showing "Read Now") are automatically marked as inactive
 python src/check_deals.py
+
+# Force check all books (even if already checked today)
+python src/check_deals.py --force
 
 # Send email for recent deals (without re-checking)
 python src/check_deals.py --send-notification
@@ -43,6 +47,7 @@ python src/send_notification.py --test
 
 - **Automatic library sync** - Scrapes ASINs from your Amazon "My Books" page
 - **Smart deal detection** - Finds books under $4 or 50% off
+- **Intelligent caching** - Skips books already checked today (deals reset 3 AM Eastern)
 - **Owned book detection** - Automatically removes books you've already purchased
 - **Email notifications** - Get notified when deals are found
 - **Price history tracking** - Stores price changes in MySQL database

@@ -228,6 +228,25 @@ class Database:
         result = cursor.fetchone()
         return result
 
+    def was_checked_today(self, asin: str, deal_day: datetime) -> bool:
+        """
+        Check if a book was already checked on the current deal day.
+
+        Args:
+            asin: Amazon Standard Identification Number
+            deal_day: The current deal day (midnight)
+
+        Returns:
+            True if already checked today, False otherwise
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM price_history
+            WHERE asin = %s AND check_date >= %s
+        """, (asin, deal_day))
+        result = cursor.fetchone()
+        return result[0] > 0
+
     def add_notification(self, asin: str, notified_price: float) -> None:
         """
         Add a notification record for a book.

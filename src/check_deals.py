@@ -5,6 +5,7 @@ import sys
 import os
 import re
 import time
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
 from config import Config
@@ -18,6 +19,33 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def get_current_deal_day() -> datetime:
+    """
+    Get the current "deal day" considering 3 AM Eastern reset time.
+
+    Deals reset at 3 AM Eastern, so before 3 AM counts as previous day.
+    Returns midnight of the current deal day.
+    """
+    from datetime import timezone
+
+    # Get current UTC time
+    now_utc = datetime.now(timezone.utc)
+
+    # Convert to Eastern Time (UTC-5, or UTC-4 during DST)
+    # Simple approximation: use UTC-5 (we can adjust if needed)
+    eastern_offset = timedelta(hours=-5)
+    now_eastern = now_utc + eastern_offset
+
+    # If before 3 AM, use previous day
+    if now_eastern.hour < 3:
+        deal_day = now_eastern.date() - timedelta(days=1)
+    else:
+        deal_day = now_eastern.date()
+
+    # Return as datetime at midnight
+    return datetime.combine(deal_day, datetime.min.time())
 
 
 def calculate_savings_percent(current_price: float, list_price: float) -> int:
@@ -162,7 +190,7 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def check_deals(config: Config, db: Database, target_asin: str = None):
+def check_deals(config: Config, db: Database, target_asin: str = None, force: bool = False):
     """Check for deals on tracked books using web scraping"""
     session_path = os.path.expanduser(config.get('storage.browser_session_path'))
     os.makedirs(os.path.dirname(session_path), exist_ok=True)
@@ -170,6 +198,10 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
     headless = config.get('scraping.headless', True)
     page_timeout = config.get('scraping.page_timeout', 30) * 1000
     check_delay = config.get('scraping.check_delay', 2000)
+
+    # Get current deal day (considers 3 AM Eastern reset)
+    deal_day = get_current_deal_day()
+    logger.info(f"Deal day: {deal_day.date()} (deals reset at 3 AM Eastern)")
 
     # Get books to check
     if target_asin:
@@ -180,6 +212,20 @@ def check_deals(config: Config, db: Database, target_asin: str = None):
         books = [book] if book else []
     else:
         books = db.get_active_books()
+
+    # Filter out books already checked today (unless force flag is set)
+    if not force:
+        books_to_check = []
+        skipped_count = 0
+        for book in books:
+            if db.was_checked_today(book['asin'], deal_day):
+                logger.debug(f"Skipping {book['title'] or book['asin']} (already checked today)")
+                skipped_count += 1
+            else:
+                books_to_check.append(book)
+        books = books_to_check
+        if skipped_count > 0:
+            logger.info(f"Skipped {skipped_count} books already checked today (use --force to override)")
 
     logger.info(f"Checking {len(books)} active books for deals...")
 
@@ -356,6 +402,8 @@ def main():
     parser.add_argument('--config', default='config.yaml', help='Path to config file')
     parser.add_argument('--asin', help='Check specific ASIN')
     parser.add_argument('--verbose', action='store_true', help='Verbose output')
+    parser.add_argument('--force', action='store_true',
+                        help='Force check all books, even if already checked today')
     parser.add_argument('--send-notification', action='store_true',
                         help='Send email for recent deals without checking prices')
     parser.add_argument('--hours', type=int, default=24,
@@ -379,7 +427,7 @@ def main():
         if args.send_notification:
             send_notification_for_recent_deals(config, db, args.hours)
         else:
-            check_deals(config, db, target_asin=args.asin)
+            check_deals(config, db, target_asin=args.asin, force=args.force)
 
         db.close()
 
