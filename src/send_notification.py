@@ -30,24 +30,27 @@ def send_test_email(config: Config) -> None:
             'title': 'The Art of Computer Programming, Vol. 1',
             'author': 'Donald Knuth',
             'cover_url': 'https://m.media-amazon.com/images/I/41f5MZ8Y2JL.jpg',
-            'price': 1.99,
-            'list_price': 19.99
+            'current_price': 1.99,
+            'list_price': 19.99,
+            'previous_price': 4.99
         },
         {
             'asin': 'B01234EFGH',
             'title': 'Clean Code: A Handbook of Agile Software Craftsmanship',
             'author': 'Robert C. Martin',
             'cover_url': 'https://m.media-amazon.com/images/I/41xShlnTZTL.jpg',
-            'price': 2.99,
-            'list_price': 29.99
+            'current_price': 2.99,
+            'list_price': 29.99,
+            'previous_price': 9.99
         },
         {
             'asin': 'B01234IJKL',
             'title': 'Design Patterns: Elements of Reusable Object-Oriented Software',
             'author': 'Erich Gamma',
             'cover_url': 'https://m.media-amazon.com/images/I/51szD9HC9pL.jpg',
-            'price': 3.99,
-            'list_price': 39.99
+            'current_price': 3.99,
+            'list_price': 39.99,
+            'previous_price': 3.99
         }
     ]
 

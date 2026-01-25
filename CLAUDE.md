@@ -82,6 +82,8 @@ The application consists of five main modules:
 4. **email_notifier.py** - Email notification system
    - Sends HTML emails via SMTP
    - Generates formatted deal notifications with book covers
+   - Shows current price, list price, and previous price for comparison
+   - Displays both overall savings and new price drops
    - Supports Gmail SMTP (configurable)
 
 5. **scraper.py** - Web scraping utilities for "My Books"

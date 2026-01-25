@@ -228,6 +228,26 @@ class Database:
         result = cursor.fetchone()
         return result
 
+    def get_previous_price(self, asin: str) -> Optional[float]:
+        """
+        Get the second-most-recent price for a book (prior day's price).
+
+        Args:
+            asin: Amazon Standard Identification Number
+
+        Returns:
+            Previous price as float or None if no previous price exists
+        """
+        cursor = self.conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT price FROM price_history
+            WHERE asin = %s
+            ORDER BY id DESC
+            LIMIT 1 OFFSET 1
+        """, (asin,))
+        result = cursor.fetchone()
+        return result['price'] if result else None
+
     def was_checked_today(self, asin: str, deal_day: datetime) -> bool:
         """
         Check if a book was already checked on the current deal day.

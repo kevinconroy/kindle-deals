@@ -1,4 +1,5 @@
 import smtplib
+import html as html_lib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import List, Dict, Any
@@ -117,6 +118,21 @@ class EmailNotifier:
             font-weight: bold;
             margin-left: 10px;
         }
+        .previous-price {
+            font-size: 14px;
+            color: #888;
+            margin-left: 10px;
+        }
+        .price-drop {
+            display: inline-block;
+            background-color: #067d62;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
         .buy-button {
             display: inline-block;
             background-color: #ff9900;
@@ -139,21 +155,29 @@ class EmailNotifier:
 
         for book in books:
             asin = book['asin']
-            title = book['title']
-            author = book.get('author', 'Unknown Author')
+            title = html_lib.escape(book['title'])
+            author = html_lib.escape(book.get('author', 'Unknown Author'))
             cover_url = book.get('cover_url', '')
             current_price = book.get('current_price') or book.get('price', 0)
             list_price = book.get('list_price', 0)
+            previous_price = book.get('previous_price')
 
             # Handle free books (price could be 0 or None)
             if current_price is None:
                 current_price = 0
 
-            # Calculate savings percentage
+            # Calculate savings percentage from list price
             if list_price and list_price > 0:
                 savings_percent = int(((list_price - current_price) / list_price) * 100)
             else:
                 savings_percent = 0
+
+            # Calculate price drop from previous price
+            price_drop = None
+            price_drop_percent = None
+            if previous_price and previous_price > current_price:
+                price_drop = previous_price - current_price
+                price_drop_percent = int((price_drop / previous_price) * 100)
 
             # Amazon link
             amazon_link = f"https://www.amazon.com/dp/{asin}"
@@ -190,13 +214,28 @@ class EmailNotifier:
 
             html += f"""
                 <div class="price-info">
-                    <span class="current-price">{price_display}</span>
+                    <div style="margin-bottom: 8px;">
+                        <span class="current-price">{price_display}</span>
 """
 
+            # Show list price and overall savings
             if list_price > 0 and list_price != current_price:
                 html += f"""
-                    <span class="list-price">${list_price:.2f}</span>
-                    <span class="savings">Save {savings_percent}%</span>
+                        <span class="list-price">List: ${list_price:.2f}</span>
+                        <span class="savings">Save {savings_percent}%</span>
+"""
+
+            html += f"""
+                    </div>
+"""
+
+            # Show previous price and price drop if available
+            if previous_price and price_drop and price_drop > 0:
+                html += f"""
+                    <div style="font-size: 13px; color: #555;">
+                        <span class="previous-price">Was: ${previous_price:.2f}</span>
+                        <span class="price-drop">↓ ${price_drop:.2f} ({price_drop_percent}%)</span>
+                    </div>
 """
 
             html += f"""

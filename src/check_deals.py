@@ -107,27 +107,50 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
             logger.debug(f"Could not find title: {e}")
             pass
 
-        # Extract author
+        # Extract author - try multiple selectors
         author = None
-        try:
-            author_elem = page.locator('.author .contributorNameID').first
-            if author_elem.count() > 0:
-                author = author_elem.inner_text().strip()
-                logger.debug(f"Found author: {author}")
-        except Exception as e:
-            logger.debug(f"Could not find author: {e}")
-            pass
+        author_selectors = [
+            '.author .contributorNameID',
+            '#bylineInfo .author a.contributorNameID',
+            'span.author a',
+            '#bylineInfo span.author',
+            'a[data-asin] .author',
+            '.contributorNameTrigger'
+        ]
+        for selector in author_selectors:
+            try:
+                author_elem = page.locator(selector).first
+                if author_elem.count() > 0:
+                    author = author_elem.inner_text().strip()
+                    logger.debug(f"Found author: {author} using selector: {selector}")
+                    break
+            except Exception:
+                continue
+        if not author:
+            logger.debug(f"Could not find author for {asin}")
 
-        # Extract cover image
+        # Extract cover image - try multiple selectors
         cover_url = None
-        try:
-            img_elem = page.locator('#ebooksImgBlkFront, #imgBlkFront').first
-            if img_elem.count() > 0:
-                cover_url = img_elem.get_attribute('src')
-                logger.debug(f"Found cover: {cover_url}")
-        except Exception as e:
-            logger.debug(f"Could not find cover: {e}")
-            pass
+        cover_selectors = [
+            '#ebooksImgBlkFront',
+            '#imgBlkFront',
+            '#ebooksProductImage',
+            '#landingImage',
+            'img.a-dynamic-image',
+            '#main-image',
+            'img[data-a-dynamic-image]'
+        ]
+        for selector in cover_selectors:
+            try:
+                img_elem = page.locator(selector).first
+                if img_elem.count() > 0:
+                    cover_url = img_elem.get_attribute('src')
+                    logger.debug(f"Found cover: {cover_url} using selector: {selector}")
+                    break
+            except Exception:
+                continue
+        if not cover_url:
+            logger.debug(f"Could not find cover for {asin}")
 
         # Extract Kindle price
         current_price = None
@@ -256,13 +279,20 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
 
                     current_price = book_info['current_price']
                     list_price = book_info['list_price']
-                    author = book_info['author'] or book['author']
-                    cover_url = book_info['cover_url'] or book['cover_url']
 
-                    # Update metadata if book title is missing
-                    if not book['title'] and book_info['title']:
-                        title = book_info['title']
-                        logger.info(f"Updated title from scrape: {title}")
+                    # Upsert book metadata with latest scraped data
+                    scraped_title = book_info['title']
+                    scraped_author = book_info['author']
+                    scraped_cover = book_info['cover_url']
+
+                    # Use scraped data if available, otherwise keep existing
+                    title = scraped_title or book['title'] or asin
+                    author = scraped_author or book['author']
+                    cover_url = scraped_cover or book['cover_url']
+
+                    # Update metadata if we got any new data from scraping
+                    if scraped_title or scraped_author or scraped_cover:
+                        logger.debug(f"Updating metadata for {asin}")
                         db.update_book_metadata(asin, title, author, cover_url)
 
                     # Handle free books (price could be 0 or None)
@@ -273,6 +303,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                     # If no list price, use current price
                     if list_price is None:
                         list_price = current_price
+
+                    # Get previous price before saving new price history
+                    previous_price = db.get_previous_price(asin)
 
                     # Save price history
                     db.add_price_history(asin, current_price, list_price)
@@ -291,6 +324,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                             'cover_url': cover_url,
                             'current_price': current_price,
                             'list_price': list_price,
+                            'previous_price': previous_price,
                             'savings_percent': savings_percent
                         }
                         deals_found.append(deal)
