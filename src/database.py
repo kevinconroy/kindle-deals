@@ -246,7 +246,7 @@ class Database:
             LIMIT 1 OFFSET 1
         """, (asin,))
         result = cursor.fetchone()
-        return result['price'] if result else None
+        return float(result['price']) if result and result['price'] is not None else None
 
     def was_checked_today(self, asin: str, deal_day: datetime) -> bool:
         """

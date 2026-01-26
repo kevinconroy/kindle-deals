@@ -54,17 +54,32 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
 
                 logger.info("Login complete, saving session...")
 
-            # Navigate directly to Books & Samples page
+            # First navigate to Amazon homepage to ensure session is loaded
+            logger.info("Loading Amazon homepage...")
+            page.goto("https://www.amazon.com")
+            page.wait_for_load_state('domcontentloaded')
+            page.wait_for_timeout(2000)  # Give cookies/session time to settle
+
+            # Now navigate to Books & Samples page
             logger.info("Navigating to Amazon Books & Samples...")
             page.goto("https://www.amazon.com/hz/mycd/digital-console/contentlist/booksSamples/dateDsc?pageNumber=1")
 
             # Wait for page to load
-            page.wait_for_load_state('networkidle')
+            page.wait_for_load_state('domcontentloaded')
+            page.wait_for_timeout(2000)
 
-            # Check if logged in (look for sign-in elements)
-            if page.locator('input[name="email"]').count() > 0:
-                logger.error("Not logged in. Please run with --login to log in and save your session.")
-                sys.exit(2)
+            # Check if we can find any ASINs - if not, we're probably not logged in
+            book_divs_count = page.locator('.digital_entity_title').count()
+
+            if book_divs_count == 0:
+                # No content found - check if we're at a login page
+                if page.locator('input[name="password"]').count() > 0 or page.locator('h1:has-text("Sign")').count() > 0:
+                    logger.error("Not logged in to Amazon. Please run with --login to log in and save your session.")
+                    sys.exit(2)
+                else:
+                    logger.warning("No books found on page - your library may be empty or the page structure may have changed")
+            else:
+                logger.info(f"Successfully loaded Books & Samples page - found {book_divs_count} items")
 
             # Get total count from CONTENT_COUNT element
             total_items = 0

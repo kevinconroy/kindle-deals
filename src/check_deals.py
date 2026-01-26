@@ -78,23 +78,43 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
             return None
 
         # Check if book is already owned (has "Read Now" button)
+        # Note: "Read for Free" just means Kindle Unlimited, NOT owned
+        already_owned = False
         read_now_selectors = [
-            'text="Read Now"',
-            'text="Read for Free"',
-            '#kindle-reader-button',
-            'a[href*="read/"]'
+            ('button:has-text("Read Now")', 'button with text Read Now'),
+            ('a:has-text("Read Now")', 'link with text Read Now'),
+            ('#kindle-reader-button', 'kindle reader button'),
+            ('a[href*="/read/"]', 'read link'),
+            ('input[value*="Read Now"]', 'input with Read Now'),
+            ('#kop-button-ingress', 'Kindle Owners Program button')
         ]
-        for selector in read_now_selectors:
-            if page.locator(selector).count() > 0:
-                logger.info(f"Book {asin} already owned (found 'Read Now' button)")
-                return {
-                    'title': None,
-                    'author': None,
-                    'cover_url': None,
-                    'current_price': None,
-                    'list_price': None,
-                    'already_owned': True
-                }
+        for selector, description in read_now_selectors:
+            try:
+                count = page.locator(selector).count()
+                if count > 0:
+                    logger.info(f"Book {asin} already owned (found {description})")
+                    already_owned = True
+                    break
+            except Exception as e:
+                logger.debug(f"Error checking selector {selector}: {e}")
+                continue
+
+        if already_owned:
+            return {
+                'title': None,
+                'author': None,
+                'cover_url': None,
+                'current_price': None,
+                'list_price': None,
+                'already_owned': True
+            }
+        else:
+            # Check for "Buy now" button to confirm it's not owned
+            buy_now_count = page.locator('input[value*="Buy now"], button:has-text("Buy now")').count()
+            if buy_now_count > 0:
+                logger.debug(f"Book {asin} not owned (found 'Buy now' button)")
+            else:
+                logger.debug(f"Book {asin} not owned (no 'Read Now' button found)")
 
         # Extract title
         title = None
@@ -235,20 +255,34 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
         books = [book] if book else []
     else:
         books = db.get_active_books()
+        logger.debug(f"Fetched {len(books)} books from get_active_books()")
 
-    # Filter out books already checked today (unless force flag is set)
-    if not force:
-        books_to_check = []
-        skipped_count = 0
-        for book in books:
-            if db.was_checked_today(book['asin'], deal_day):
-                logger.debug(f"Skipping {book['title'] or book['asin']} (already checked today)")
-                skipped_count += 1
-            else:
-                books_to_check.append(book)
-        books = books_to_check
-        if skipped_count > 0:
-            logger.info(f"Skipped {skipped_count} books already checked today (use --force to override)")
+    # Filter out inactive books and books already checked today (unless force flag is set)
+    books_to_check = []
+    skipped_count = 0
+    inactive_count = 0
+
+    for book in books:
+        # Double-check that book is actually active (safety check)
+        if book['is_active'] == 0:
+            logger.debug(f"Skipping {book['title'] or book['asin']} (inactive)")
+            inactive_count += 1
+            continue
+
+        # Skip books already checked today (unless force flag)
+        if not force and db.was_checked_today(book['asin'], deal_day):
+            logger.debug(f"Skipping {book['title'] or book['asin']} (already checked today)")
+            skipped_count += 1
+            continue
+
+        books_to_check.append(book)
+
+    books = books_to_check
+
+    if inactive_count > 0:
+        logger.warning(f"Filtered out {inactive_count} inactive books (these should not have been in the active books list)")
+    if skipped_count > 0:
+        logger.info(f"Skipped {skipped_count} books already checked today (use --force to override)")
 
     logger.info(f"Checking {len(books)} active books for deals...")
 
@@ -261,7 +295,8 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
             for book in books:
                 asin = book['asin']
                 title = book['title'] or asin
-                logger.info(f"Checking {title}...")
+                url = f"https://www.amazon.com/dp/{asin}"
+                logger.info(f"Checking {title}... ({url})")
 
                 try:
                     # Scrape book information
@@ -273,7 +308,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
 
                     # Check if book is already owned
                     if book_info.get('already_owned'):
-                        logger.info(f"Marking {title} as inactive (already owned)")
+                        logger.info(f"Marking {asin} as inactive (already owned)")
                         db.mark_book_inactive(asin)
                         continue
 
@@ -312,7 +347,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
 
                     # Check if should notify
                     last_notification = db.get_last_notification(asin)
-                    last_notified_price = last_notification['notified_price'] if last_notification else None
+                    last_notified_price = float(last_notification['notified_price']) if last_notification and last_notification['notified_price'] is not None else None
 
                     if should_notify(current_price, list_price, last_notified_price):
                         savings_percent = calculate_savings_percent(current_price, list_price)
