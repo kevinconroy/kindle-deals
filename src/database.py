@@ -99,6 +99,31 @@ class Database:
             )
         """)
 
+        # Recommendations table - stores "also bought" data
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS recommendations (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                source_asin VARCHAR(20) NOT NULL,
+                recommended_asin VARCHAR(20) NOT NULL,
+                created_date DATETIME NOT NULL,
+                FOREIGN KEY (source_asin) REFERENCES books(asin),
+                INDEX idx_recommended_asin (recommended_asin),
+                UNIQUE KEY unique_recommendation (source_asin, recommended_asin)
+            )
+        """)
+
+        # Deal checks table - tracks processed daily deals
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS deal_checks (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                asin VARCHAR(20) NOT NULL,
+                check_date DATE NOT NULL,
+                was_deal TINYINT(1) NOT NULL,
+                notified TINYINT(1) NOT NULL,
+                UNIQUE KEY unique_daily_check (asin, check_date)
+            )
+        """)
+
         self.conn.commit()
 
     def add_book(self, asin: str, title: str = None, author: str = None,
