@@ -12,7 +12,9 @@
       "Bash(./src/send_notification.py:*)",
       "Bash(git mv:*)",
       "WebFetch(domain:affiliate-program.amazon.com)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(source venv/bin/activate)",
+      "Bash(python src/send_notification.py:*)"
     ]
   }
 }
