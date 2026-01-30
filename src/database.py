@@ -413,6 +413,49 @@ class Database:
         results = cursor.fetchall()
         return {row['recommended_asin']: row['title'] or 'Unknown' for row in results}
 
+    def add_deal_check(self, asin: str, was_deal: bool, notified: bool) -> None:
+        """
+        Record that we checked a daily deal.
+
+        Args:
+            asin: Book ASIN
+            was_deal: Whether it met deal criteria
+            notified: Whether we sent notification
+
+        Note:
+            Uses INSERT...IGNORE pattern - if already checked today, silently ignores.
+            This prevents duplicate processing of the same deal on the same day.
+        """
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO deal_checks (asin, check_date, was_deal, notified)
+                VALUES (%s, CURDATE(), %s, %s)
+            """, (asin, 1 if was_deal else 0, 1 if notified else 0))
+            self.conn.commit()
+        except mysql.connector.IntegrityError:
+            # Already checked today - ignore
+            self.conn.rollback()
+            pass
+
+    def was_deal_checked_today(self, asin: str) -> bool:
+        """
+        Check if we already processed this deal today.
+
+        Args:
+            asin: Book ASIN
+
+        Returns:
+            True if already checked today, False otherwise
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*) FROM deal_checks
+            WHERE asin = %s AND check_date = CURDATE()
+        """, (asin,))
+        count = cursor.fetchone()[0]
+        return count > 0
+
     def close(self):
         """Close the database connection."""
         if self.conn:
