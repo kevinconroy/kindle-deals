@@ -339,6 +339,80 @@ class Database:
         results = cursor.fetchall()
         return results
 
+    def add_recommendation(self, source_asin: str, recommended_asin: str) -> None:
+        """
+        Add a recommendation (also bought) for a book.
+
+        Args:
+            source_asin: The book that has the recommendation
+            recommended_asin: The recommended book ASIN
+        """
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO recommendations (source_asin, recommended_asin, created_date)
+                VALUES (%s, %s, %s)
+            """, (source_asin, recommended_asin, datetime.now()))
+            self.conn.commit()
+        except mysql.connector.IntegrityError:
+            # Duplicate recommendation - already exists, ignore
+            self.conn.rollback()
+            pass
+
+    def get_recommendations(self, source_asin: str) -> List[str]:
+        """
+        Get all recommended ASINs for a source book.
+
+        Args:
+            source_asin: The book to get recommendations for
+
+        Returns:
+            List of recommended ASINs
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT recommended_asin FROM recommendations
+            WHERE source_asin = %s
+        """, (source_asin,))
+        results = cursor.fetchall()
+        return [row[0] for row in results]
+
+    def has_recommendations(self, source_asin: str) -> bool:
+        """
+        Check if we've already scraped recommendations for this book.
+
+        Args:
+            source_asin: The book to check
+
+        Returns:
+            True if recommendations exist, False otherwise
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*) FROM recommendations
+            WHERE source_asin = %s
+        """, (source_asin,))
+        count = cursor.fetchone()[0]
+        return count > 0
+
+    def get_all_recommended_asins(self) -> Dict[str, str]:
+        """
+        Get all recommended ASINs with their source book titles.
+
+        Returns:
+            Dict mapping recommended_asin -> source_book_title
+            (titles are 'Unknown' if not yet fetched from API)
+        """
+        cursor = self.conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT r.recommended_asin, b.title
+            FROM recommendations r
+            JOIN books b ON r.source_asin = b.asin
+            WHERE b.is_active = 1
+        """)
+        results = cursor.fetchall()
+        return {row['recommended_asin']: row['title'] or 'Unknown' for row in results}
+
     def close(self):
         """Close the database connection."""
         if self.conn:
