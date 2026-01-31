@@ -9,8 +9,10 @@ and syncs your Kindle library (including samples) to the local database.
 import argparse
 import logging
 import os
+import re
 import sys
 from pathlib import Path
+from typing import List
 
 from config import Config
 from database import Database
@@ -21,6 +23,70 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def scrape_recommendations(page, asin: str) -> List[str]:
+    """
+    Scrape 'Customers who bought this also bought' ASINs from product page.
+
+    Args:
+        page: Playwright page object
+        asin: Book ASIN to scrape recommendations for
+
+    Returns:
+        List of recommended ASINs
+    """
+    try:
+        url = f"https://www.amazon.com/dp/{asin}"
+        logger.debug(f"Scraping recommendations from {url}")
+        page.goto(url, wait_until='domcontentloaded', timeout=15000)
+        page.wait_for_timeout(2000)
+
+        recommendations = []
+
+        # Try multiple selectors for recommendation carousels
+        selectors = [
+            '.similarities-widget a[href*="/dp/"]',
+            '.p13n-desktop-carousel a[href*="/dp/"]',
+            '[data-a-carousel-options] a[href*="/dp/"]',
+            '.a-carousel-card a[href*="/dp/"]'
+        ]
+
+        for selector in selectors:
+            links = page.locator(selector).all()
+            if links:
+                logger.debug(f"Found {len(links)} recommendation links with selector: {selector}")
+                for link in links[:20]:  # Limit to 20 recommendations
+                    try:
+                        href = link.get_attribute('href')
+                        if href and '/dp/' in href:
+                            # Extract ASIN from URL like /dp/B01234ABCD/
+                            match = re.search(r'/dp/([A-Z0-9]{10})', href)
+                            if match:
+                                rec_asin = match.group(1)
+                                if rec_asin != asin:  # Don't recommend itself
+                                    recommendations.append(rec_asin)
+                    except Exception as e:
+                        logger.debug(f"Error extracting ASIN from link: {e}")
+                        continue
+
+                if recommendations:
+                    break  # Found recommendations, no need to try other selectors
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_recs = []
+        for rec in recommendations:
+            if rec not in seen:
+                seen.add(rec)
+                unique_recs.append(rec)
+
+        logger.info(f"Found {len(unique_recs)} unique recommendations for {asin}")
+        return unique_recs
+
+    except Exception as e:
+        logger.warning(f"Failed to scrape recommendations for {asin}: {e}")
+        return []
 
 
 def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode: bool = False, headless_override: bool = None):
@@ -182,6 +248,30 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                     logger.debug(f"Marked {asin} as inactive")
 
             logger.info(f"Successfully added {added_count} new books, {skipped_count} already existed, {len(removed_asins)} removed")
+
+            # Scrape recommendations for samples
+            logger.info("Scraping recommendations for samples...")
+            rec_count = 0
+            for sample in samples:
+                asin = sample['asin']
+
+                # Skip if we already have recommendations
+                if db.has_recommendations(asin):
+                    logger.debug(f"Skipping {asin} - already has recommendations")
+                    continue
+
+                # Scrape recommendations
+                recs = scrape_recommendations(page, asin)
+
+                # Store in database
+                for rec_asin in recs:
+                    db.add_recommendation(asin, rec_asin)
+                    rec_count += 1
+
+                # Add delay to avoid rate limiting
+                page.wait_for_timeout(3000)
+
+            logger.info(f"Stored {rec_count} recommendations")
 
         except Exception as e:
             logger.error(f"Failed to sync library: {e}")
