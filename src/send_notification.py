@@ -32,7 +32,8 @@ def send_test_email(config: Config) -> None:
             'cover_url': 'https://m.media-amazon.com/images/I/41f5MZ8Y2JL.jpg',
             'current_price': 1.99,
             'list_price': 19.99,
-            'previous_price': 4.99
+            'previous_price': 4.99,
+            'match_reason': 'Same author: Donald Knuth'
         },
         {
             'asin': 'B01234EFGH',
@@ -41,7 +42,8 @@ def send_test_email(config: Config) -> None:
             'cover_url': 'https://m.media-amazon.com/images/I/41xShlnTZTL.jpg',
             'current_price': 2.99,
             'list_price': 29.99,
-            'previous_price': 9.99
+            'previous_price': 9.99,
+            'match_reason': 'Same series: Clean Code'
         },
         {
             'asin': 'B01234IJKL',
@@ -50,7 +52,8 @@ def send_test_email(config: Config) -> None:
             'cover_url': 'https://m.media-amazon.com/images/I/51szD9HC9pL.jpg',
             'current_price': 3.99,
             'list_price': 39.99,
-            'previous_price': 3.99
+            'previous_price': 3.99,
+            'match_reason': 'Recommended from: Code Complete'
         }
     ]
 

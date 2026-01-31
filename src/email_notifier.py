@@ -146,6 +146,17 @@ class EmailNotifier:
         .buy-button:hover {
             background-color: #ec8a00;
         }
+        .match-reason {
+            font-size: 13px;
+            color: #067d62;
+            margin: 8px 0 12px 0;
+            font-weight: 600;
+            padding: 4px 0;
+        }
+        .match-reason::before {
+            content: "✓ ";
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -204,6 +215,13 @@ class EmailNotifier:
             if author:
                 html += f"""
                 <div class="book-author">by {author}</div>
+"""
+
+            # Add match reason if available (for daily deals)
+            match_reason = book.get('match_reason')
+            if match_reason:
+                html += f"""
+                <div class="match-reason">{html_lib.escape(match_reason)}</div>
 """
 
             # Format price display
