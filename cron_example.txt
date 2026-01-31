@@ -1,0 +1,10 @@
+# Kindle Deals Monitor - Cron Schedule
+
+# Check daily deals at 5 AM
+0 5 * * * cd /Users/kconroy/Sites/kindle-deals && source venv/bin/activate && python src/check_daily_deals.py
+
+# Check sample prices at 6 AM
+0 6 * * * cd /Users/kconroy/Sites/kindle-deals && source venv/bin/activate && python src/check_deals.py
+
+# Sync Kindle library weekly on Sunday at 5 AM
+0 5 * * 0 cd /Users/kconroy/Sites/kindle-deals && source venv/bin/activate && python src/sync_library.py

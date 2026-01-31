@@ -52,8 +52,27 @@ python src/check_deals.py
 # Check specific book by ASIN
 python src/check_deals.py --asin B01234567X
 
+# Check today's daily deals for matches
+python src/check_daily_deals.py
+
+# Dry run daily deals (don't send email)
+python src/check_daily_deals.py --dry-run
+
 # Send test email notification
-python src/send_notification.py
+python src/send_notification.py --test
+```
+
+### Cron Schedule
+
+```bash
+# Check daily deals at 5 AM
+0 5 * * * cd /path/to/kindle-deals && source venv/bin/activate && python src/check_daily_deals.py
+
+# Check sample prices at 6 AM
+0 6 * * * cd /path/to/kindle-deals && source venv/bin/activate && python src/check_deals.py
+
+# Sync library weekly on Sunday at 5 AM
+0 5 * * 0 cd /path/to/kindle-deals && source venv/bin/activate && python src/sync_library.py
 ```
 
 ## Architecture
@@ -64,9 +83,9 @@ The application consists of five main modules:
 
 1. **database.py** - MySQL database interface
    - Uses mysql-connector-python for MySQL connections
-   - Manages three tables: books, price_history, notifications
+   - Manages five tables: books, price_history, notifications, recommendations, deal_checks
    - Auto-creates database and tables on initialization
-   - Provides methods for adding/retrieving books, prices, and notifications
+   - Provides methods for adding/retrieving books, prices, notifications, and recommendations
 
 2. **deal_logic.py** - Deal detection logic
    - Pure functions with no dependencies
@@ -92,15 +111,22 @@ The application consists of five main modules:
    - Contains helper functions for price extraction
    - NOTE: Only used for collecting book list, not for price checking
 
+6. **similarity_matcher.py** - Book similarity matching
+   - Matches books by author, series, or recommendations
+   - Caches data in memory for fast lookups
+   - Used by daily deals checker
+
 ### Scripts
 
 1. **sync_library.py** - Syncs your Kindle library from Amazon "My Books" page using Playwright
-2. **check_deals.py** - Checks book prices via Product Advertising API and sends notifications
-3. **send_notification.py** - Sends test email notifications
+   - Also scrapes "also bought" recommendations for each sample
+2. **check_deals.py** - Checks book prices via web scraping and sends notifications
+3. **check_daily_deals.py** - Checks Amazon's daily deals for books matching your interests
+4. **send_notification.py** - Sends test email notifications
 
 ## Database Schema
 
-The application uses MySQL with three tables:
+The application uses MySQL with five tables:
 
 ### books table
 ```sql
@@ -138,6 +164,35 @@ CREATE TABLE notifications (
     FOREIGN KEY (asin) REFERENCES books(asin)
 )
 ```
+
+### recommendations table
+```sql
+CREATE TABLE recommendations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    source_asin VARCHAR(20) NOT NULL,
+    recommended_asin VARCHAR(20) NOT NULL,
+    created_date DATETIME NOT NULL,
+    FOREIGN KEY (source_asin) REFERENCES books(asin),
+    INDEX idx_recommended_asin (recommended_asin),
+    UNIQUE KEY unique_recommendation (source_asin, recommended_asin)
+)
+```
+
+Note: Stores Amazon "also bought" recommendations. Only source_asin has a foreign key (user's books); recommended_asin references external books that may not be in the user's library.
+
+### deal_checks table
+```sql
+CREATE TABLE deal_checks (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asin VARCHAR(20) NOT NULL,
+    check_date DATE NOT NULL,
+    was_deal TINYINT(1) NOT NULL,
+    notified TINYINT(1) NOT NULL,
+    UNIQUE KEY unique_daily_check (asin, check_date)
+)
+```
+
+Note: Tracks which daily deals have been checked to prevent duplicate processing on the same day.
 
 ## Deal Logic
 
