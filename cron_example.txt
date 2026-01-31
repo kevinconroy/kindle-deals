@@ -1,5 +1,10 @@
 # Kindle Deals Monitor - Cron Schedule
 
+# Option 1: Simplified - Use the all-in-one script
+# Run complete workflow (sync + daily deals) at 5 AM daily
+0 5 * * * cd /Users/kconroy/Sites/kindle-deals && ./check_all_deals.sh
+
+# Option 2: Granular control - Individual scripts
 # Check daily deals at 5 AM
 0 5 * * * cd /Users/kconroy/Sites/kindle-deals && source venv/bin/activate && python src/check_daily_deals.py
 

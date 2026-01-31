@@ -42,6 +42,23 @@ pytest --cov=src
 ```
 
 ### Running Scripts
+
+**Quick Start (Recommended):**
+```bash
+# Run complete workflow: sync library + check daily deals
+./check_all_deals.sh
+
+# Dry run (no emails, no database changes)
+./check_all_deals.sh --dry-run
+
+# Verbose output
+./check_all_deals.sh --verbose
+
+# Skip library sync, only check daily deals
+./check_all_deals.sh --skip-sync
+```
+
+**Individual Scripts:**
 ```bash
 # Sync Kindle library from Amazon "My Books" page
 python src/sync_library.py
@@ -64,6 +81,13 @@ python src/send_notification.py --test
 
 ### Cron Schedule
 
+**Option 1: Simplified (Recommended)**
+```bash
+# Run complete workflow (sync + daily deals) at 5 AM daily
+0 5 * * * cd /path/to/kindle-deals && ./check_all_deals.sh
+```
+
+**Option 2: Granular Control**
 ```bash
 # Check daily deals at 5 AM
 0 5 * * * cd /path/to/kindle-deals && source venv/bin/activate && python src/check_daily_deals.py
@@ -118,6 +142,14 @@ The application consists of five main modules:
 
 ### Scripts
 
+**Main Workflow:**
+- **check_all_deals.sh** - All-in-one script that runs sync + daily deals check
+  - Handles virtual environment activation
+  - Runs library sync with recommendations
+  - Checks daily deals for matches
+  - Supports `--dry-run`, `--verbose`, `--skip-sync` flags
+
+**Individual Scripts:**
 1. **sync_library.py** - Syncs your Kindle library from Amazon "My Books" page using Playwright
    - Also scrapes "also bought" recommendations for each sample
 2. **check_deals.py** - Checks book prices via web scraping and sends notifications
