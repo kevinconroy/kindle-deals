@@ -1,61 +1,68 @@
 # Kindle Deals Monitor
 
-Monitor Kindle samples for price deals and receive email notifications.
+Monitor your Kindle samples for price drops and get email notifications when deals appear.
+
+## Prerequisites
+
+- **Python 3.7+**
+- **MySQL** running locally
+- **Amazon account** with Kindle samples in your "My Books" library
+- **Email account** with SMTP access (iCloud with an app-specific password works well)
 
 ## Setup
 
-One-line setup:
-
 ```bash
+# Clone and set up
+git clone https://github.com/your-username/kindle-deals.git
+cd kindle-deals
 ./setup.sh
-```
-
-Then activate the virtual environment:
-
-```bash
 source venv/bin/activate
 ```
 
-After setup, edit `config.yaml` with your settings (MySQL credentials, email, Amazon API keys).
+Edit `config.yaml` with your settings. The fields you must change:
 
-## Usage
+```yaml
+database:
+  password: ""              # your MySQL root password
+
+email:
+  from_address: "you@icloud.com"
+  to_address: "you@gmail.com"
+  password: "xxxx-xxxx-xxxx-xxxx"  # iCloud app-specific password
+```
+
+Log in to Amazon (one-time, saves browser session):
 
 ```bash
-# First time: Login and save session
 python src/sync_library.py --login
+```
 
-# Sync your Kindle library (after login)
-# Note: Books removed from your samples list are automatically marked as inactive
-python src/sync_library.py
+Verify email is working:
 
-# Check for deals
-# Note: Skips books already checked today (after 3 AM Eastern)
-# Note: Books already owned (showing "Read Now") are automatically marked as inactive
-python src/check_deals.py
-
-# Force check all books (even if already checked today)
-python src/check_deals.py --force
-
-# Send email for recent deals (without re-checking)
-python src/check_deals.py --send-notification
-
-# Test email notification
+```bash
 python src/send_notification.py --test
 ```
 
-## Features
+## Usage
 
-- **Automatic library sync** - Scrapes ASINs from your Amazon "My Books" page
-- **Smart deal detection** - Finds books under $4 or 50% off
-- **Intelligent caching** - Skips books already checked today (deals reset 3 AM Eastern)
-- **Owned book detection** - Automatically removes books you've already purchased
-- **Email notifications** - Get notified when deals are found
-- **Price history tracking** - Stores price changes in MySQL database
+Run the full workflow (sync library + check deals):
 
-## Configuration
+```bash
+./check_all_deals.sh
+```
 
-Copy `config.yaml.example` to `config.yaml` and update with your settings, including:
-- MySQL database credentials
-- Email SMTP settings and password
+Options:
 
-Note: This tool uses web scraping instead of Amazon's API to avoid eligibility requirements.
+```bash
+./check_all_deals.sh --dry-run      # no emails, no database changes
+./check_all_deals.sh --skip-sync    # skip library sync
+./check_all_deals.sh --verbose      # detailed output
+./check_all_deals.sh --force        # re-check books already checked today
+```
+
+### Automate with cron
+
+```bash
+# Run daily at 5 AM
+0 5 * * * cd /path/to/kindle-deals && ./check_all_deals.sh
+```
