@@ -4,7 +4,7 @@
 #
 # This script runs the complete deal checking workflow:
 # 1. Sync Kindle library (with recommendations)
-# 2. Check daily deals for matches
+# 2. Check deals (sample books + daily deals)
 #
 
 set -e  # Exit on any error
@@ -39,6 +39,9 @@ source venv/bin/activate
 DRY_RUN=""
 VERBOSE=""
 SKIP_SYNC=""
+FORCE=""
+SKIP_SAMPLES=""
+SKIP_DAILY=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -50,18 +53,33 @@ while [[ $# -gt 0 ]]; do
             VERBOSE="--verbose"
             shift
             ;;
+        --force|-f)
+            FORCE="--force"
+            shift
+            ;;
         --skip-sync)
             SKIP_SYNC="true"
+            shift
+            ;;
+        --skip-samples)
+            SKIP_SAMPLES="--skip-samples"
+            shift
+            ;;
+        --skip-daily)
+            SKIP_DAILY="--skip-daily"
             shift
             ;;
         --help|-h)
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
-            echo "  --dry-run      Don't send emails or update database"
-            echo "  --verbose, -v  Show detailed output"
-            echo "  --skip-sync    Skip library sync, only check daily deals"
-            echo "  --help, -h     Show this help message"
+            echo "  --dry-run        Don't send emails or update database"
+            echo "  --verbose, -v    Show detailed output"
+            echo "  --force, -f      Force check all books, even if already checked today"
+            echo "  --skip-sync      Skip library sync, only check deals"
+            echo "  --skip-samples   Skip sample book price checks"
+            echo "  --skip-daily     Skip daily deals check"
+            echo "  --help, -h       Show this help message"
             echo ""
             exit 0
             ;;
@@ -86,7 +104,7 @@ if [ -z "$SKIP_SYNC" ]; then
     else
         echo ""
         echo -e "${YELLOW}Warning: Library sync failed${NC}"
-        echo "Continuing to daily deals check anyway..."
+        echo "Continuing to deal checks anyway..."
         echo ""
     fi
 else
@@ -94,17 +112,17 @@ else
     echo ""
 fi
 
-# Step 2: Check daily deals
-echo -e "${GREEN}Step 2: Checking daily deals...${NC}"
+# Step 2: Check deals (sample books + daily deals)
+echo -e "${GREEN}Step 2: Checking deals...${NC}"
 echo ""
 
-if python src/check_daily_deals.py $DRY_RUN $VERBOSE; then
+if python src/check_deals.py $DRY_RUN $VERBOSE $FORCE $SKIP_SAMPLES $SKIP_DAILY; then
     echo ""
-    echo -e "${GREEN}✓ Daily deals check complete${NC}"
+    echo -e "${GREEN}✓ Deal check complete${NC}"
     echo ""
 else
     echo ""
-    echo -e "${YELLOW}Daily deals check failed${NC}"
+    echo -e "${YELLOW}Deal check failed${NC}"
     exit 1
 fi
 
