@@ -1,6 +1,9 @@
 # Kindle Deals Monitor
 
-Monitor your Kindle samples for price drops and get email notifications when deals appear.
+Sync and monitor your Kindle library samples for price drops and get email notifications when $4 or less deals appear. 
+
+![Kindle deal alert](docs/sample_email.png)
+
 
 ## Prerequisites
 
@@ -36,6 +39,8 @@ Log in to Amazon (one-time, saves browser session):
 ```bash
 python src/sync_library.py --login
 ```
+
+Known bug: Headless sync is error prone. You may need to run with `--login` in order for it to be able to load your library.
 
 Verify email is working:
 
