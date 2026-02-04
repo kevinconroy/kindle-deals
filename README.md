@@ -2,7 +2,7 @@
 
 Sync and monitor your Kindle library samples for price drops and get email notifications when $4 or less deals appear. 
 
-![Kindle deal alert](docs/sample_email.png)
+![Kindle deal alert](docs/sample-email.png)
 
 
 ## Prerequisites
