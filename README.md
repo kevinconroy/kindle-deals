@@ -1,6 +1,6 @@
-# Kindle Deals Monitor
+# Kindle Library Deals: Auto-Sync Your Samples and Monitor Deals
 
-Sync and monitor your Kindle library samples for price drops and get email notifications when $4 or less deals appear. 
+Sync and monitor your Kindle library samples for price drops and get email notifications when samples are $4 or less or ≥50% off. 
 
 ![Kindle deal alert](docs/sample-email.png)
 
