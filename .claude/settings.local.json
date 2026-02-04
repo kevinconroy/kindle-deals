@@ -14,7 +14,18 @@
       "WebFetch(domain:affiliate-program.amazon.com)",
       "WebSearch",
       "Bash(source venv/bin/activate)",
-      "Bash(python src/send_notification.py:*)"
+      "Bash(python src/send_notification.py:*)",
+      "Bash(python -c:*)",
+      "Bash(mysql:*)",
+      "Bash(python3:*)",
+      "Bash(pytest:*)",
+      "Bash(PYTHONPATH=/Users/kconroy/Sites/kindle-deals pytest:*)",
+      "Bash(python test_recommendations.py:*)",
+      "Bash(python:*)",
+      "Bash(git rm:*)",
+      "Bash(./check_all_deals.sh:*)",
+      "Bash(test:*)",
+      "Bash(PYTHONPATH=src pytest:*)"
     ]
   }
 }

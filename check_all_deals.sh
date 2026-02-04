@@ -42,6 +42,7 @@ SKIP_SYNC=""
 FORCE=""
 SKIP_SAMPLES=""
 SKIP_DAILY=""
+LOGIN=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -69,6 +70,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_DAILY="--skip-daily"
             shift
             ;;
+        --login)
+            LOGIN="--login"
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [options]"
             echo ""
@@ -79,6 +84,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-sync      Skip library sync, only check deals"
             echo "  --skip-samples   Skip sample book price checks"
             echo "  --skip-daily     Skip daily deals check"
+            echo "  --login          Log in to Amazon (interactive, saves session)"
             echo "  --help, -h       Show this help message"
             echo ""
             exit 0
@@ -97,7 +103,7 @@ if [ -z "$SKIP_SYNC" ]; then
     echo "This may take a few minutes..."
     echo ""
 
-    if python src/sync_library.py $VERBOSE; then
+    if python src/sync_library.py $VERBOSE $LOGIN; then
         echo ""
         echo -e "${GREEN}✓ Library sync complete${NC}"
         echo ""

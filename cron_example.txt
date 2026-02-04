@@ -5,9 +5,6 @@
 0 5 * * * cd /Users/kconroy/Sites/kindle-deals && ./check_all_deals.sh
 
 # Option 2: Granular control - Individual scripts
-# Check daily deals at 5 AM
-0 5 * * * cd /Users/kconroy/Sites/kindle-deals && source venv/bin/activate && python src/check_daily_deals.py
-
 # Check sample prices at 6 AM
 0 6 * * * cd /Users/kconroy/Sites/kindle-deals && source venv/bin/activate && python src/check_deals.py
 

@@ -140,10 +140,20 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
             if book_divs_count == 0:
                 # No content found - check if we're at a login page
                 if page.locator('input[name="password"]').count() > 0 or page.locator('h1:has-text("Sign")').count() > 0:
-                    logger.error("Not logged in to Amazon. Please run with --login to log in and save your session.")
+                    # Save screenshot for debugging
+                    screenshot_path = os.path.expanduser("~/.kindle-deals/login-required.png")
+                    os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+                    page.screenshot(path=screenshot_path)
+                    logger.error(f"Not logged in to Amazon. Screenshot saved to {screenshot_path}")
+                    logger.error("Please run with --login to log in and save your session.")
                     sys.exit(2)
                 else:
-                    logger.warning("No books found on page - your library may be empty or the page structure may have changed")
+                    # Save screenshot for debugging unexpected empty pages
+                    screenshot_path = os.path.expanduser("~/.kindle-deals/empty-page.png")
+                    os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+                    page.screenshot(path=screenshot_path)
+                    logger.warning(f"No books found on page - screenshot saved to {screenshot_path}")
+                    logger.warning("Your library may be empty or the page structure may have changed")
             else:
                 logger.info(f"Successfully loaded Books & Samples page - found {book_divs_count} items")
 
