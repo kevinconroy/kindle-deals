@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Kindle Deals Monitor is a Python application that tracks price changes on Kindle books in your "My Books" library and sends email notifications when deals are found. The application uses Amazon's Product Advertising API for price checking and web scraping (via Playwright) to collect your book list from Amazon's "My Books" page.
+Kindle Deals Monitor is a Python application that tracks price changes on Kindle books in your "My Books" library and sends email notifications when deals are found. The application uses web scraping (via Playwright) to collect your book list from Amazon's "My Books" page and check prices.
 
 ## Quick Start Commands
 
@@ -45,7 +45,7 @@ pytest --cov=src
 
 **Quick Start (Recommended):**
 ```bash
-# Run complete workflow: sync library + check daily deals
+# Run complete workflow: sync library + check deals
 ./check_all_deals.sh
 
 # Dry run (no emails, no database changes)
@@ -54,8 +54,14 @@ pytest --cov=src
 # Verbose output
 ./check_all_deals.sh --verbose
 
-# Skip library sync, only check daily deals
+# Skip library sync, only check deals
 ./check_all_deals.sh --skip-sync
+
+# Skip sample book price checks, only check daily deals
+./check_all_deals.sh --skip-samples
+
+# Skip daily deals, only check sample books
+./check_all_deals.sh --skip-daily
 ```
 
 **Individual Scripts:**
@@ -63,17 +69,17 @@ pytest --cov=src
 # Sync Kindle library from Amazon "My Books" page
 python src/sync_library.py
 
-# Check for deals on tracked books
+# Check for deals (sample books + daily deals)
 python src/check_deals.py
 
 # Check specific book by ASIN
 python src/check_deals.py --asin B01234567X
 
-# Check today's daily deals for matches
-python src/check_daily_deals.py
+# Skip sample book checks, only check daily deals
+python src/check_deals.py --skip-samples
 
-# Dry run daily deals (don't send email)
-python src/check_daily_deals.py --dry-run
+# Skip daily deals, only check sample books
+python src/check_deals.py --skip-daily
 
 # Send test email notification
 python src/send_notification.py --test
@@ -81,22 +87,9 @@ python src/send_notification.py --test
 
 ### Cron Schedule
 
-**Option 1: Simplified (Recommended)**
 ```bash
-# Run complete workflow (sync + daily deals) at 5 AM daily
+# Run complete workflow (sync + check deals) at 5 AM daily
 0 5 * * * cd /path/to/kindle-deals && ./check_all_deals.sh
-```
-
-**Option 2: Granular Control**
-```bash
-# Check daily deals at 5 AM
-0 5 * * * cd /path/to/kindle-deals && source venv/bin/activate && python src/check_daily_deals.py
-
-# Check sample prices at 6 AM
-0 6 * * * cd /path/to/kindle-deals && source venv/bin/activate && python src/check_deals.py
-
-# Sync library weekly on Sunday at 5 AM
-0 5 * * 0 cd /path/to/kindle-deals && source venv/bin/activate && python src/sync_library.py
 ```
 
 ## Architecture
@@ -143,18 +136,19 @@ The application consists of five main modules:
 ### Scripts
 
 **Main Workflow:**
-- **check_all_deals.sh** - All-in-one script that runs sync + daily deals check
+- **check_all_deals.sh** - All-in-one script that runs sync + deal checks
   - Handles virtual environment activation
   - Runs library sync with recommendations
-  - Checks daily deals for matches
-  - Supports `--dry-run`, `--verbose`, `--skip-sync` flags
+  - Checks deals on sample books and daily deals
+  - Supports `--dry-run`, `--verbose`, `--skip-sync`, `--skip-samples`, `--skip-daily` flags
 
 **Individual Scripts:**
 1. **sync_library.py** - Syncs your Kindle library from Amazon "My Books" page using Playwright
    - Also scrapes "also bought" recommendations for each sample
-2. **check_deals.py** - Checks book prices via web scraping and sends notifications
-3. **check_daily_deals.py** - Checks Amazon's daily deals for books matching your interests
-4. **send_notification.py** - Sends test email notifications
+2. **check_deals.py** - Checks book prices and daily deals via web scraping, sends notifications
+   - Handles both sample book price checks and daily deals matching
+   - Supports `--skip-samples` and `--skip-daily` flags for granular control
+3. **send_notification.py** - Sends test email notifications
 
 ## Database Schema
 
@@ -172,7 +166,7 @@ CREATE TABLE books (
 )
 ```
 
-Note: Title can be NULL when books are first synced from library (ASIN only). The check_deals script will fetch and populate title/author/cover_url from the Amazon API.
+Note: Title can be NULL when books are first synced from library (ASIN only). The check_deals script will fetch and populate title/author/cover_url via web scraping.
 
 ### price_history table
 ```sql
@@ -259,12 +253,6 @@ Configuration is stored in `config.yaml` (created from `config.yaml.example`).
 
 **amazon** - Amazon settings
 - `domain`: Amazon domain (e.g., "amazon.com")
-- `check_frequency`: How often to check prices (seconds)
-- `daily_check_time`: Preferred time for daily checks
-- `api_access_key`: Product Advertising API access key
-- `api_secret_key`: Product Advertising API secret key
-- `api_associate_tag`: Amazon Associates tag
-- `api_region`: API region (US, UK, FR, DE, JP, etc.)
 
 **database** - MySQL connection settings
 - `host`: MySQL server host (default: "localhost")
@@ -343,12 +331,7 @@ pytest --cov=src --cov-report=html
 
 ## Price Checking Method
 
-**IMPORTANT**: The application uses Amazon's Product Advertising API for price checking, NOT web scraping.
-
-- Price checking is done via the paapi5-python-sdk library
-- Requires API credentials from Amazon Associates program
-- Web scraping (Playwright) is ONLY used to collect the book list from "My Books"
-- This hybrid approach provides reliable price data while still tracking your personal library
+The application uses web scraping (Playwright) for both collecting the book list from "My Books" and checking prices. No Amazon API credentials are required.
 
 ## Development Notes
 
@@ -381,4 +364,4 @@ When modifying the database schema:
 - Store all configuration including passwords in config.yaml
 - Use logging for operational messages (not print statements)
 - Validate configuration on startup
-- Handle API errors gracefully with retries where appropriate
+- Handle errors gracefully with retries where appropriate
