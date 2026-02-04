@@ -11,7 +11,8 @@ from typing import List, Dict, Any, Optional
 from config import Config
 from database import Database
 from scraper import AmazonScraper
-from deal_logic import should_notify
+from deal_logic import should_notify, is_deal
+from similarity_matcher import SimilarityMatcher
 from email_notifier import EmailNotifier
 
 logging.basicConfig(
@@ -233,8 +234,130 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def check_deals(config: Config, db: Database, target_asin: str = None, force: bool = False):
-    """Check for deals on tracked books using web scraping"""
+def scrape_daily_deals(page) -> List[str]:
+    """Scrape ASINs from Amazon's daily Kindle deals page."""
+    deals_url = "https://www.amazon.com/amz-books/book-deals?filters=v1%3AFORMAT%5Bkindle_edition%5D"
+
+    logger.info("Navigating to daily deals page...")
+    page.goto(deals_url, wait_until='domcontentloaded', timeout=30000)
+    page.wait_for_timeout(3000)
+
+    asins = []
+    products = page.locator('[data-asin]').all()
+    logger.info(f"Found {len(products)} products on deals page")
+
+    for product in products:
+        try:
+            asin = product.get_attribute('data-asin')
+            if asin and len(asin) == 10:
+                asins.append(asin)
+        except Exception as e:
+            logger.debug(f"Error extracting ASIN: {e}")
+            continue
+
+    unique_asins = list(set(asins))
+    logger.info(f"Found {len(unique_asins)} unique deal ASINs")
+    return unique_asins
+
+
+def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool = False) -> List[Dict[str, Any]]:
+    """
+    Check today's daily deals for matches against user's interests.
+
+    Returns list of deal dicts for matched books.
+    """
+    matcher = SimilarityMatcher(db)
+    logger.info(f"Loaded matcher with {len(matcher.sample_authors)} authors, "
+                f"{len(matcher.sample_series)} series, "
+                f"{len(matcher.recommended_asins)} recommendations")
+
+    deals_found = []
+    deal_asins = scrape_daily_deals(page)
+    logger.info(f"Checking {len(deal_asins)} daily deals for matches...")
+
+    for asin in deal_asins:
+        # Skip if already checked today
+        if not dry_run and db.was_deal_checked_today(asin):
+            logger.debug(f"Skipping {asin} - already checked today")
+            continue
+
+        # Scrape book info using the full scraper
+        book_info = scrape_book_info(page, asin)
+
+        if not book_info or book_info.get('already_owned'):
+            if not dry_run:
+                db.add_deal_check(asin, was_deal=False, notified=False)
+            continue
+
+        title = book_info.get('title')
+        author = book_info.get('author', '')
+        current_price = book_info.get('current_price')
+        list_price = book_info.get('list_price')
+
+        if not title:
+            logger.warning(f"Could not scrape info for {asin}")
+            if not dry_run:
+                db.add_deal_check(asin, was_deal=False, notified=False)
+            continue
+
+        # Check if it matches user's interests
+        is_match, match_reason = matcher.is_match(asin, author, title)
+
+        if not is_match:
+            logger.debug(f"No match: {title}")
+            if not dry_run:
+                db.add_deal_check(asin, was_deal=False, notified=False)
+            continue
+
+        # Check price
+        if current_price is None or list_price is None:
+            logger.debug(f"Skipping {title} - no price info")
+            if not dry_run:
+                db.add_deal_check(asin, was_deal=False, notified=False)
+            continue
+
+        if not is_deal(current_price, list_price):
+            logger.info(f"Match but not a deal: {title} (${current_price})")
+            if not dry_run:
+                db.add_deal_check(asin, was_deal=False, notified=False)
+            continue
+
+        savings_percent = calculate_savings_percent(current_price, list_price)
+        logger.info(f"Daily deal match: {title} - ${current_price:.2f} ({match_reason})")
+
+        deals_found.append({
+            'asin': asin,
+            'title': title,
+            'author': author,
+            'cover_url': book_info.get('cover_url'),
+            'current_price': current_price,
+            'list_price': list_price,
+            'savings_percent': savings_percent,
+            'match_reason': match_reason
+        })
+
+        if not dry_run:
+            db.add_deal_check(asin, was_deal=True, notified=True)
+
+        time.sleep(check_delay / 1000)
+
+    logger.info(f"Found {len(deals_found)} daily deal matches")
+    return deals_found
+
+
+def check_deals(config: Config, db: Database, target_asin: str = None, force: bool = False, dry_run: bool = False, skip_samples: bool = False, skip_daily: bool = False):
+    """
+    Check for deals on tracked books and daily deals page.
+
+    Args:
+        config: Configuration object
+        db: Database instance
+        target_asin: Optional specific ASIN to check
+        force: Force check even if already checked today
+        dry_run: If True, don't send emails or update database
+        skip_samples: If True, skip checking sample book prices
+        skip_daily: If True, skip checking daily deals page
+    """
     session_path = os.path.expanduser(config.get('storage.browser_session_path'))
     os.makedirs(os.path.dirname(session_path), exist_ok=True)
 
@@ -246,147 +369,159 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
     deal_day = get_current_deal_day()
     logger.info(f"Deal day: {deal_day.date()} (deals reset at 3 AM Eastern)")
 
-    # Get books to check
-    if target_asin:
-        book = db.get_book(target_asin)
-        if book and book['is_active'] == 0:
-            logger.warning(f"Book {target_asin} is marked as inactive - skipping")
-            return
-        books = [book] if book else []
-    else:
-        books = db.get_active_books()
-        logger.debug(f"Fetched {len(books)} books from get_active_books()")
-
-    # Filter out inactive books and books already checked today (unless force flag is set)
-    books_to_check = []
-    skipped_count = 0
-    inactive_count = 0
-
-    for book in books:
-        # Double-check that book is actually active (safety check)
-        if book['is_active'] == 0:
-            logger.debug(f"Skipping {book['title'] or book['asin']} (inactive)")
-            inactive_count += 1
-            continue
-
-        # Skip books already checked today (unless force flag)
-        if not force and db.was_checked_today(book['asin'], deal_day):
-            logger.debug(f"Skipping {book['title'] or book['asin']} (already checked today)")
-            skipped_count += 1
-            continue
-
-        books_to_check.append(book)
-
-    books = books_to_check
-
-    if inactive_count > 0:
-        logger.warning(f"Filtered out {inactive_count} inactive books (these should not have been in the active books list)")
-    if skipped_count > 0:
-        logger.info(f"Skipped {skipped_count} books already checked today (use --force to override)")
-
-    logger.info(f"Checking {len(books)} active books for deals...")
-
     deals_found = []
 
     with AmazonScraper(session_path, headless, page_timeout) as scraper:
         page = scraper.new_page()
 
         try:
-            for book in books:
-                asin = book['asin']
-                title = book['title'] or asin
-                url = f"https://www.amazon.com/dp/{asin}"
-                logger.info(f"Checking {title}... ({url})")
+            # Phase 1: Check sample book prices
+            if not skip_samples:
+                # Get books to check
+                if target_asin:
+                    book = db.get_book(target_asin)
+                    if book and book['is_active'] == 0:
+                        logger.warning(f"Book {target_asin} is marked as inactive - skipping")
+                        books = []
+                    else:
+                        books = [book] if book else []
+                else:
+                    books = db.get_active_books()
+                    logger.debug(f"Fetched {len(books)} books from get_active_books()")
 
-                try:
-                    # Scrape book information
-                    book_info = scrape_book_info(page, asin)
+                # Filter out inactive books and books already checked today (unless force flag is set)
+                books_to_check = []
+                skipped_count = 0
+                inactive_count = 0
 
-                    if not book_info:
-                        logger.warning(f"Could not scrape info for {asin}")
+                for book in books:
+                    # Double-check that book is actually active (safety check)
+                    if book['is_active'] == 0:
+                        logger.debug(f"Skipping {book['title'] or book['asin']} (inactive)")
+                        inactive_count += 1
                         continue
 
-                    # Check if book is already owned
-                    if book_info.get('already_owned'):
-                        logger.info(f"Marking {asin} as inactive (already owned)")
-                        db.mark_book_inactive(asin)
+                    # Skip books already checked today (unless force flag)
+                    if not force and db.was_checked_today(book['asin'], deal_day):
+                        logger.debug(f"Skipping {book['title'] or book['asin']} (already checked today)")
+                        skipped_count += 1
                         continue
 
-                    current_price = book_info['current_price']
-                    list_price = book_info['list_price']
+                    books_to_check.append(book)
 
-                    # Upsert book metadata with latest scraped data
-                    scraped_title = book_info['title']
-                    scraped_author = book_info['author']
-                    scraped_cover = book_info['cover_url']
+                books = books_to_check
 
-                    # Use scraped data if available, otherwise keep existing
-                    title = scraped_title or book['title'] or asin
-                    author = scraped_author or book['author']
-                    cover_url = scraped_cover or book['cover_url']
+                if inactive_count > 0:
+                    logger.warning(f"Filtered out {inactive_count} inactive books (these should not have been in the active books list)")
+                if skipped_count > 0:
+                    logger.info(f"Skipped {skipped_count} books already checked today (use --force to override)")
 
-                    # Update metadata if we got any new data from scraping
-                    if scraped_title or scraped_author or scraped_cover:
-                        logger.debug(f"Updating metadata for {asin}")
-                        db.update_book_metadata(asin, title, author, cover_url)
+                logger.info(f"Checking {len(books)} active books for deals...")
 
-                    # Handle free books (price could be 0 or None)
-                    if current_price is None:
-                        logger.warning(f"Could not determine price for {title}")
+                for book in books:
+                    asin = book['asin']
+                    title = book['title'] or asin
+                    url = f"https://www.amazon.com/dp/{asin}"
+                    logger.info(f"Checking {title}... ({url})")
+
+                    try:
+                        # Scrape book information
+                        book_info = scrape_book_info(page, asin)
+
+                        if not book_info:
+                            logger.warning(f"Could not scrape info for {asin}")
+                            continue
+
+                        # Check if book is already owned
+                        if book_info.get('already_owned'):
+                            logger.info(f"Marking {asin} as inactive (already owned)")
+                            if not dry_run:
+                                db.mark_book_inactive(asin)
+                            continue
+
+                        current_price = book_info['current_price']
+                        list_price = book_info['list_price']
+
+                        # Upsert book metadata with latest scraped data
+                        scraped_title = book_info['title']
+                        scraped_author = book_info['author']
+                        scraped_cover = book_info['cover_url']
+
+                        # Use scraped data if available, otherwise keep existing
+                        title = scraped_title or book['title'] or asin
+                        author = scraped_author or book['author']
+                        cover_url = scraped_cover or book['cover_url']
+
+                        # Update metadata if we got any new data from scraping
+                        if scraped_title or scraped_author or scraped_cover:
+                            logger.debug(f"Updating metadata for {asin}")
+                            if not dry_run:
+                                db.update_book_metadata(asin, title, author, cover_url)
+
+                        # Handle free books (price could be 0 or None)
+                        if current_price is None:
+                            logger.warning(f"Could not determine price for {title}")
+                            continue
+
+                        # If no list price, use current price
+                        if list_price is None:
+                            list_price = current_price
+
+                        # Get previous price before saving new price history
+                        previous_price = db.get_previous_price(asin)
+
+                        # Save price history
+                        if not dry_run:
+                            db.add_price_history(asin, current_price, list_price)
+
+                        # Check if should notify
+                        last_notification = db.get_last_notification(asin)
+                        last_notified_price = float(last_notification['notified_price']) if last_notification and last_notification['notified_price'] is not None else None
+
+                        if should_notify(current_price, list_price, last_notified_price):
+                            savings_percent = calculate_savings_percent(current_price, list_price)
+
+                            deal = {
+                                'asin': asin,
+                                'title': title,
+                                'author': author,
+                                'cover_url': cover_url,
+                                'current_price': current_price,
+                                'list_price': list_price,
+                                'previous_price': previous_price,
+                                'savings_percent': savings_percent
+                            }
+                            deals_found.append(deal)
+
+                            # Record notification
+                            if not dry_run:
+                                db.add_notification(asin, current_price)
+
+                            # Log with proper formatting (handle free books)
+                            if current_price == 0:
+                                logger.info(f"Deal found: {title} - FREE (100% off)")
+                            else:
+                                logger.info(f"Deal found: {title} - ${current_price:.2f} ({savings_percent}% off)")
+
+                        # Delay between checks to avoid rate limiting
+                        time.sleep(check_delay / 1000)
+
+                    except Exception as e:
+                        logger.error(f"Failed to process {asin}: {e}")
+                        import traceback
+                        traceback.print_exc()
                         continue
 
-                    # If no list price, use current price
-                    if list_price is None:
-                        list_price = current_price
-
-                    # Get previous price before saving new price history
-                    previous_price = db.get_previous_price(asin)
-
-                    # Save price history
-                    db.add_price_history(asin, current_price, list_price)
-
-                    # Check if should notify
-                    last_notification = db.get_last_notification(asin)
-                    last_notified_price = float(last_notification['notified_price']) if last_notification and last_notification['notified_price'] is not None else None
-
-                    if should_notify(current_price, list_price, last_notified_price):
-                        savings_percent = calculate_savings_percent(current_price, list_price)
-
-                        deal = {
-                            'asin': asin,
-                            'title': title,
-                            'author': author,
-                            'cover_url': cover_url,
-                            'current_price': current_price,
-                            'list_price': list_price,
-                            'previous_price': previous_price,
-                            'savings_percent': savings_percent
-                        }
-                        deals_found.append(deal)
-
-                        # Record notification
-                        db.add_notification(asin, current_price)
-
-                        # Log with proper formatting (handle free books)
-                        if current_price == 0:
-                            logger.info(f"Deal found: {title} - FREE (100% off)")
-                        else:
-                            logger.info(f"Deal found: {title} - ${current_price:.2f} ({savings_percent}% off)")
-
-                    # Delay between checks to avoid rate limiting
-                    time.sleep(check_delay / 1000)
-
-                except Exception as e:
-                    logger.error(f"Failed to process {asin}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
+            # Phase 2: Check daily deals
+            if not skip_daily and not target_asin:
+                daily_deals = check_daily_deals_phase(page, db, check_delay, dry_run)
+                deals_found.extend(daily_deals)
 
         finally:
             page.close()
 
     # Send email if deals found
-    if deals_found:
+    if deals_found and not dry_run:
         logger.info(f"Sending email for {len(deals_found)} deals...")
 
         notifier = EmailNotifier(
@@ -403,6 +538,10 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
 
         notifier.send_email(to_address, subject, html)
         logger.info("Email sent successfully")
+    elif deals_found and dry_run:
+        logger.info(f"DRY RUN: Would send email for {len(deals_found)} deals:")
+        for deal in deals_found:
+            logger.info(f"  - {deal['title']} (${deal['current_price']:.2f})")
     else:
         logger.info("No deals found")
 
@@ -473,8 +612,14 @@ def main():
     parser.add_argument('--config', default='config.yaml', help='Path to config file')
     parser.add_argument('--asin', help='Check specific ASIN')
     parser.add_argument('--verbose', action='store_true', help='Verbose output')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Check deals but don\'t send email or update database')
     parser.add_argument('--force', action='store_true',
                         help='Force check all books, even if already checked today')
+    parser.add_argument('--skip-samples', action='store_true',
+                        help='Skip checking sample book prices')
+    parser.add_argument('--skip-daily', action='store_true',
+                        help='Skip checking daily deals page')
     parser.add_argument('--send-notification', action='store_true',
                         help='Send email for recent deals without checking prices')
     parser.add_argument('--hours', type=int, default=24,
@@ -498,7 +643,7 @@ def main():
         if args.send_notification:
             send_notification_for_recent_deals(config, db, args.hours)
         else:
-            check_deals(config, db, target_asin=args.asin, force=args.force)
+            check_deals(config, db, target_asin=args.asin, force=args.force, dry_run=args.dry_run, skip_samples=args.skip_samples, skip_daily=args.skip_daily)
 
         db.close()
 
