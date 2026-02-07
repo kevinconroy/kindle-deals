@@ -323,6 +323,7 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
             continue
 
         savings_percent = calculate_savings_percent(current_price, list_price)
+        previous_price = db.get_previous_price(asin) if db.get_book(asin) else None
         logger.info(f"Daily deal match: {title} - ${current_price:.2f} ({match_reason})")
 
         deals_found.append({
@@ -332,6 +333,7 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
             'cover_url': book_info.get('cover_url'),
             'current_price': current_price,
             'list_price': list_price,
+            'previous_price': previous_price,
             'savings_percent': savings_percent,
             'match_reason': match_reason
         })

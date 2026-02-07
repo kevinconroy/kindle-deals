@@ -243,9 +243,6 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                         skipped_count += 1
                         logger.debug(f"Skipped ASIN {asin} (already exists)")
 
-                        # Reactivate if it was previously inactive
-                        db.reactivate_book(asin)
-
                 except Exception as e:
                     logger.error(f"Failed to add ASIN {sample['asin']} to database: {e}")
 
