@@ -45,24 +45,27 @@ class EmailNotifier:
 <head>
     <style>
         body {
-            font-family: Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
             line-height: 1.6;
             color: #333;
             max-width: 800px;
             margin: 0 auto;
             padding: 20px;
+            background-color: #f5f5f5;
         }
         h1 {
             color: #ff9900;
             border-bottom: 2px solid #ff9900;
             padding-bottom: 10px;
+            font-size: 24px;
+            margin-bottom: 5px;
         }
         .book {
-            border: 1px solid #ddd;
+            border: 1px solid #e0e0e0;
             border-radius: 8px;
             padding: 20px;
-            margin: 20px 0;
-            background-color: #f9f9f9;
+            margin: 16px 0;
+            background-color: #ffffff;
         }
         .book-content {
             display: table;
@@ -71,85 +74,90 @@ class EmailNotifier:
         .book-cover {
             display: table-cell;
             vertical-align: top;
-            width: 150px;
+            width: 120px;
             padding-right: 20px;
         }
         .book-cover img {
-            max-width: 150px;
+            max-width: 120px;
             border-radius: 4px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
         }
         .book-details {
             display: table-cell;
             vertical-align: top;
         }
         .book-title {
-            font-size: 20px;
+            font-size: 18px;
             font-weight: bold;
             color: #232f3e;
-            margin: 0 0 5px 0;
+            margin: 0 0 4px 0;
+            line-height: 1.3;
         }
         .book-author {
             font-size: 14px;
             color: #555;
-            margin: 0 0 15px 0;
+            margin: 0 0 10px 0;
         }
         .price-info {
-            margin: 15px 0;
+            margin: 10px 0;
         }
         .current-price {
-            font-size: 24px;
+            font-size: 22px;
             font-weight: bold;
             color: #b12704;
         }
         .list-price {
             font-size: 14px;
-            color: #555;
+            color: #888;
             text-decoration: line-through;
-            margin-left: 10px;
+            margin-left: 8px;
         }
         .savings {
             display: inline-block;
             background-color: #c45500;
             color: white;
-            padding: 4px 8px;
+            padding: 3px 7px;
             border-radius: 3px;
             font-size: 12px;
             font-weight: bold;
-            margin-left: 10px;
+            margin-left: 8px;
         }
         .previous-price {
-            font-size: 14px;
+            font-size: 13px;
             color: #888;
-            margin-left: 10px;
         }
         .price-drop {
             display: inline-block;
             background-color: #067d62;
             color: white;
-            padding: 4px 8px;
+            padding: 3px 7px;
             border-radius: 3px;
             font-size: 12px;
             font-weight: bold;
-            margin-left: 10px;
+            margin-left: 8px;
         }
         .buy-button {
             display: inline-block;
             background-color: #ff9900;
-            color: #111;
-            padding: 10px 20px;
+            color: #ffffff;
+            padding: 10px 24px;
             text-decoration: none;
-            border-radius: 4px;
+            border-radius: 6px;
             font-weight: bold;
-            margin-top: 10px;
+            font-size: 14px;
+            margin-top: 12px;
+            letter-spacing: 0.3px;
         }
         .buy-button:hover {
             background-color: #ec8a00;
         }
+        .buy-button:active {
+            color: #ffffff;
+        }
         .match-reason {
             font-size: 13px;
             color: #067d62;
-            margin: 8px 0 12px 0;
+            margin: 6px 0 10px 0;
             font-weight: 600;
             padding: 4px 0;
         }
@@ -161,7 +169,7 @@ class EmailNotifier:
 </head>
 <body>
     <h1>Kindle Deals Alert</h1>
-    <p>The following Kindle books on your watchlist are now on sale:</p>
+    <p style="color: #555; margin-top: 5px;">The following Kindle books on your watchlist are now on sale:</p>
 """
 
         for book in books:
@@ -247,12 +255,17 @@ class EmailNotifier:
                     </div>
 """
 
-            # Show previous price and price drop if available
-            if previous_price and price_drop and price_drop > 0:
+            # Show previous price when available
+            if previous_price is not None and previous_price > 0:
                 html += f"""
-                    <div style="font-size: 13px; color: #555;">
-                        <span class="previous-price">Was: ${previous_price:.2f}</span>
+                    <div style="font-size: 13px; color: #888; margin-top: 4px;">
+                        <span class="previous-price">Last seen: ${previous_price:.2f}</span>
+"""
+                if price_drop and price_drop > 0:
+                    html += f"""
                         <span class="price-drop">↓ ${price_drop:.2f} ({price_drop_percent}%)</span>
+"""
+                html += """
                     </div>
 """
 
@@ -265,9 +278,9 @@ class EmailNotifier:
 """
 
         html += """
-    <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;">
-    <p style="font-size: 12px; color: #666;">
-        This is an automated notification from your Kindle Deals Monitor.
+    <hr style="margin-top: 30px; border: none; border-top: 1px solid #e0e0e0;">
+    <p style="font-size: 11px; color: #999; text-align: center;">
+        Kindle Deals Monitor &middot; Automated notification
     </p>
 </body>
 </html>

@@ -115,3 +115,22 @@ def test_generate_email_html_no_cover():
     assert '<html>' in html
     assert 'Coverless Book' in html
     assert 'https://www.amazon.com/dp/B001234567' in html
+
+
+def test_generate_email_html_shows_previous_price():
+    """Test that previous price is shown even without a price drop."""
+    books = [
+        {
+            'asin': 'B001234567',
+            'title': 'Test Book',
+            'author': 'Test Author',
+            'cover_url': 'https://example.com/cover.jpg',
+            'current_price': 2.99,
+            'list_price': 9.99,
+            'previous_price': 2.99,  # Same price - no drop
+        }
+    ]
+
+    html = EmailNotifier.generate_email_html(books)
+    assert 'Last seen' in html
+    assert '$2.99' in html
