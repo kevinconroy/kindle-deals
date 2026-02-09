@@ -175,7 +175,7 @@ class EmailNotifier:
         for book in books:
             asin = book['asin']
             title = html_lib.escape(book['title'])
-            author = html_lib.escape(book.get('author', 'Unknown Author'))
+            author = html_lib.escape(book.get('author') or 'Unknown Author')
             cover_url = book.get('cover_url', '')
             current_price = book.get('current_price') or book.get('price', 0)
             list_price = book.get('list_price', 0)

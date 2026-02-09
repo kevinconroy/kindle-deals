@@ -25,7 +25,9 @@
       "Bash(git rm:*)",
       "Bash(./check_all_deals.sh:*)",
       "Bash(test:*)",
-      "Bash(PYTHONPATH=src pytest:*)"
+      "Bash(PYTHONPATH=src pytest:*)",
+      "Bash(PYTHONPATH=. pytest:*)",
+      "Bash(git stash:*)"
     ]
   }
 }
