@@ -255,7 +255,10 @@ class Database:
 
     def get_previous_price(self, asin: str) -> Optional[float]:
         """
-        Get the second-most-recent price for a book (prior day's price).
+        Get the most recent price for a book from a prior check.
+
+        Called before saving today's price, so the most recent entry
+        in price_history is from the previous check.
 
         Args:
             asin: Amazon Standard Identification Number
@@ -268,7 +271,7 @@ class Database:
             SELECT price FROM price_history
             WHERE asin = %s
             ORDER BY id DESC
-            LIMIT 1 OFFSET 1
+            LIMIT 1
         """, (asin,))
         result = cursor.fetchone()
         return float(result['price']) if result and result['price'] is not None else None
