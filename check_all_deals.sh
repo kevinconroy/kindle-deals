@@ -42,6 +42,7 @@ SKIP_SYNC=""
 FORCE=""
 SKIP_SAMPLES=""
 SKIP_DAILY=""
+SKIP_COLLECTIONS=""
 LOGIN=""
 
 while [[ $# -gt 0 ]]; do
@@ -70,6 +71,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_DAILY="--skip-daily"
             shift
             ;;
+        --skip-collections)
+            SKIP_COLLECTIONS="--skip-collections"
+            shift
+            ;;
         --login)
             LOGIN="--login"
             shift
@@ -80,10 +85,11 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --dry-run        Don't send emails or update database"
             echo "  --verbose, -v    Show detailed output"
-            echo "  --force, -f      Force check all books, even if already checked today"
+            echo "  --force, -f      Force full sync and check all books"
             echo "  --skip-sync      Skip library sync, only check deals"
             echo "  --skip-samples   Skip sample book price checks"
             echo "  --skip-daily     Skip daily deals check"
+            echo "  --skip-collections  Skip auto-adding samples to collection"
             echo "  --login          Log in to Amazon (interactive, saves session)"
             echo "  --help, -h       Show this help message"
             echo ""
@@ -103,7 +109,7 @@ if [ -z "$SKIP_SYNC" ]; then
     echo "This may take a few minutes..."
     echo ""
 
-    if python src/sync_library.py $VERBOSE $LOGIN; then
+    if python src/sync_library.py $VERBOSE $LOGIN $FORCE $SKIP_COLLECTIONS; then
         echo ""
         echo -e "${GREEN}✓ Library sync complete${NC}"
         echo ""
