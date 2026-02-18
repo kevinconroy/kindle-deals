@@ -32,3 +32,7 @@ scraping:
   element_timeout: 10000
   check_delay: 2000
   action_delay: 500
+
+sync:
+  collection_name: "Read Me 2026"    # Collection to auto-add uncollected samples to
+  early_stop_threshold: 10           # Stop after this many consecutive known ASINs
