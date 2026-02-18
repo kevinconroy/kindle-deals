@@ -341,15 +341,15 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
 
                 all_items.extend(page_items)
 
-                # Collection management (batch per page)
-                if not skip_collections:
-                    try:
-                        collection_name = config.get('sync.collection_name', 'Read Me 2026')
-                        added = add_samples_to_collection(page, page_items, collection_name, dry_run)
-                        if added > 0:
-                            total_collections_added += added
-                    except Exception as e:
-                        logger.warning(f"Collection management error on page {page_num}: {e}")
+                # TODO: Collection management disabled until selectors are validated against live page
+                # if not skip_collections:
+                #     try:
+                #         collection_name = config.get('sync.collection_name', 'Read Me 2026')
+                #         added = add_samples_to_collection(page, page_items, collection_name, dry_run)
+                #         if added > 0:
+                #             total_collections_added += added
+                #     except Exception as e:
+                #         logger.warning(f"Collection management error on page {page_num}: {e}")
 
                 if should_stop:
                     logger.info("Stopping sync early (use --force for full sync)")
