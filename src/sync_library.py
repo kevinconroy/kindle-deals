@@ -89,7 +89,9 @@ def scrape_recommendations(page, asin: str) -> List[str]:
         return []
 
 
-def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode: bool = False, headless_override: bool = None):
+def sync_library(config: Config, db: Database, dry_run: bool = False,
+                 login_mode: bool = False, headless_override: bool = None,
+                 force: bool = False, skip_collections: bool = False):
     """Sync Kindle library from Amazon My Books page"""
     session_path = os.path.expanduser(config.get('storage.browser_session_path'))
     os.makedirs(os.path.dirname(session_path), exist_ok=True)
@@ -126,9 +128,9 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
             page.wait_for_load_state('domcontentloaded')
             page.wait_for_timeout(2000)  # Give cookies/session time to settle
 
-            # Now navigate to Books & Samples page
-            logger.info("Navigating to Amazon Books & Samples...")
-            page.goto("https://www.amazon.com/hz/mycd/digital-console/contentlist/booksSamples/dateDsc?pageNumber=1")
+            # Now navigate to All Books page (includes both owned and samples)
+            logger.info("Navigating to Amazon All Books...")
+            page.goto("https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber=1")
 
             # Wait for page to load
             page.wait_for_load_state('domcontentloaded')
@@ -155,7 +157,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                     logger.warning(f"No books found on page - screenshot saved to {screenshot_path}")
                     logger.warning("Your library may be empty or the page structure may have changed")
             else:
-                logger.info(f"Successfully loaded Books & Samples page - found {book_divs_count} items")
+                logger.info(f"Successfully loaded All Books page - found {book_divs_count} items")
 
             # Get total count from CONTENT_COUNT element
             total_items = 0
@@ -165,7 +167,6 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                 if content_count.count() > 0:
                     count_text = content_count.inner_text().strip()
                     # Parse "Showing 26 to 50 of 139 items" to extract 139
-                    import re
                     match = re.search(r'of (\d+) items?', count_text)
                     if match:
                         total_items = int(match.group(1))
@@ -177,15 +178,19 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                 logger.warning(f"Could not determine total count: {e}")
                 logger.info("Will scrape until error...")
 
-            # Scrape all pages
-            samples = []
+            # Early-stop tracking
+            consecutive_known = 0
+            early_stop_threshold = config.get('sync.early_stop_threshold', 10)
+            should_stop = False
+            all_items = []
 
+            # Scrape all pages
             for page_num in range(1, total_pages + 1):
                 logger.info(f"Scraping page {page_num} of {total_pages}...")
 
                 # Navigate to specific page
                 if page_num > 1:
-                    page.goto(f"https://www.amazon.com/hz/mycd/digital-console/contentlist/booksSamples/dateDsc?pageNumber={page_num}")
+                    page.goto(f"https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber={page_num}")
                     page.wait_for_load_state('networkidle')
 
                 # Find all book divs with class "digital_entity_title"
@@ -197,6 +202,8 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
 
                 logger.info(f"Found {len(book_divs)} books on page {page_num}")
 
+                page_items = []
+
                 for div in book_divs:
                     try:
                         # Extract ASIN from div id (format: "content-title-B076NTR2WX")
@@ -207,60 +214,133 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
 
                         asin = div_id.replace('content-title-', '')
 
-                        # Store just the ASIN - title/author will be fetched via API later
-                        samples.append({'asin': asin})
-                        logger.info(f"Found ASIN: {asin}")
+                        # Detect if this is a sample
+                        # Look for "Sample" text in a sibling/nearby element
+                        # NOTE: Selector needs verification against live page
+                        is_sample = False
+                        try:
+                            # The item container typically has a category/type label
+                            # Try looking for "Sample" text near this item
+                            item_container = div.locator('xpath=ancestor::div[contains(@id, "content-")]').first
+                            if item_container.count() > 0:
+                                sample_text = item_container.locator('text=Sample').first
+                                is_sample = sample_text.count() > 0
+                            else:
+                                # Fallback: check the direct parent area
+                                parent = div.locator('xpath=..').first
+                                if parent.count() > 0:
+                                    sample_text = parent.locator('text=Sample').first
+                                    is_sample = sample_text.count() > 0
+                        except Exception as e:
+                            logger.debug(f"Could not detect sample status for {asin}: {e}")
+                            is_sample = True  # Default to sample if detection fails
+
+                        # Also detect collection count (for Task 5 - collection management)
+                        collection_count = 0
+                        if is_sample:
+                            try:
+                                container = div.locator('xpath=ancestor::div[contains(@id, "content-")]').first
+                                if container.count() > 0:
+                                    coll_text = container.locator('text=/\\d+ Collection/').first
+                                    if coll_text.count() > 0:
+                                        text = coll_text.inner_text()
+                                        match = re.search(r'(\d+)\s+Collection', text)
+                                        if match:
+                                            collection_count = int(match.group(1))
+                            except Exception:
+                                pass
+
+                        page_items.append({
+                            'asin': asin,
+                            'is_sample': is_sample,
+                            'collection_count': collection_count
+                        })
+                        logger.info(f"Found ASIN: {asin} ({'sample' if is_sample else 'owned'})")
+
+                        # Early-stop tracking
+                        existing = db.get_book(asin)
+                        if existing:
+                            consecutive_known += 1
+                            if not force and consecutive_known >= early_stop_threshold:
+                                logger.info(f"Early stop: {consecutive_known} consecutive known books found on page {page_num}")
+                                should_stop = True
+                                break
+                        else:
+                            consecutive_known = 0
 
                     except Exception as e:
                         logger.warning(f"Failed to extract ASIN: {e}")
                         continue
 
-            logger.info(f"Total books found: {len(samples)}")
+                all_items.extend(page_items)
+
+                if should_stop:
+                    logger.info("Stopping sync early (use --force for full sync)")
+                    break
+
+            logger.info(f"Total books found: {len(all_items)}")
 
             if dry_run:
-                logger.info(f"DRY RUN: Would add {len(samples)} books to database")
+                logger.info(f"DRY RUN: Would process {len(all_items)} books")
                 return
 
-            # Get list of currently active books before syncing
-            active_books_before = {book['asin'] for book in db.get_sample_books()}
-
-            # Add books to database
-            logger.info(f"Adding {len(samples)} books to database...")
+            # Add/update books in database
+            logger.info(f"Processing {len(all_items)} books...")
             added_count = 0
             skipped_count = 0
+            updated_count = 0
             synced_asins = set()
 
-            for sample in samples:
+            for item in all_items:
                 try:
-                    asin = sample['asin']
+                    asin = item['asin']
+                    is_sample = item['is_sample']
                     synced_asins.add(asin)
 
-                    was_added = db.add_book(**sample)
-                    if was_added:
-                        added_count += 1
-                        logger.debug(f"Added ASIN {asin} to database")
+                    existing = db.get_book(asin)
+                    if existing:
+                        # Update sample status if changed (e.g., user bought a sample)
+                        current_is_sample = existing['is_sample'] == 1
+                        if current_is_sample != is_sample:
+                            logger.info(f"ASIN {asin} status changed: {'owned -> sample' if is_sample else 'sample -> owned'}")
+                            if not dry_run:
+                                db.update_book_sample_status(asin, is_sample)
+                            updated_count += 1
+                        else:
+                            skipped_count += 1
                     else:
-                        skipped_count += 1
-                        logger.debug(f"Skipped ASIN {asin} (already exists)")
+                        if not dry_run:
+                            db.add_book(asin=asin, is_sample=is_sample)
+                        added_count += 1
 
                 except Exception as e:
-                    logger.error(f"Failed to add ASIN {sample['asin']} to database: {e}")
+                    logger.error(f"Failed to process ASIN {item['asin']}: {e}")
 
-            # Mark books as inactive if they're no longer in the samples list
-            removed_asins = active_books_before - synced_asins
-            if removed_asins:
-                logger.info(f"Marking {len(removed_asins)} books as deleted (no longer in samples)")
-                for asin in removed_asins:
-                    db.mark_book_deleted(asin)
-                    logger.debug(f"Marked {asin} as deleted")
+            logger.info(f"Added {added_count} new, {updated_count} updated, {skipped_count} unchanged")
 
-            logger.info(f"Successfully added {added_count} new books, {skipped_count} already existed, {len(removed_asins)} removed")
+            # Only mark books as deleted during --force full syncs
+            if force and not dry_run:
+                all_sample_books = {book['asin'] for book in db.get_sample_books()}
+                removed_asins = all_sample_books - synced_asins
+                if removed_asins:
+                    logger.info(f"Marking {len(removed_asins)} books as deleted (no longer in library)")
+                    for asin in removed_asins:
+                        db.mark_book_deleted(asin)
+                        logger.debug(f"Marked {asin} as deleted")
+                else:
+                    logger.info("No books removed from library")
+            elif not force:
+                logger.info("Skipping removal check (early-stop mode, use --force for full sync)")
 
             # Scrape recommendations for samples
             logger.info("Scraping recommendations for samples...")
             rec_count = 0
-            for sample in samples:
-                asin = sample['asin']
+            for item in all_items:
+                asin = item['asin']
+
+                # Only scrape recommendations for sample books
+                if not item['is_sample']:
+                    continue
 
                 # Skip if we already have recommendations
                 if db.has_recommendations(asin):
@@ -292,7 +372,11 @@ def main():
     parser.add_argument('--config', default='config.yaml', help='Path to config file')
     parser.add_argument('--dry-run', action='store_true', help='Dry run mode')
     parser.add_argument('--verbose', action='store_true', help='Verbose output')
-    parser.add_argument('--login', action='store_true', help='Login mode - opens browser and waits for you to log in')
+    parser.add_argument('--login', action='store_true', help='Login mode')
+    parser.add_argument('--force', action='store_true',
+                        help='Force full sync — disable early stopping, enable removal tracking')
+    parser.add_argument('--skip-collections', action='store_true',
+                        help='Skip auto-adding uncollected samples to collection')
     parser.add_argument('--headless', type=lambda x: x.lower() == 'true', default=None,
                         help='Override headless mode (true/false)')
 
@@ -303,7 +387,6 @@ def main():
 
     try:
         config = Config(args.config)
-
         db = Database(
             host=config.get('database.host'),
             user=config.get('database.user'),
@@ -311,14 +394,17 @@ def main():
             database=config.get('database.database')
         )
 
-        # If login mode, force non-headless
         headless_override = args.headless
         if args.login and headless_override is None:
             headless_override = False
 
-        sync_library(config, db, dry_run=args.dry_run, login_mode=args.login, headless_override=headless_override)
+        sync_library(config, db,
+                     dry_run=args.dry_run,
+                     login_mode=args.login,
+                     headless_override=headless_override,
+                     force=args.force,
+                     skip_collections=args.skip_collections)
         db.close()
-
         sys.exit(0)
 
     except Exception as e:
