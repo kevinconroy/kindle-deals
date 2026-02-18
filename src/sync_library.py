@@ -329,10 +329,9 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                         existing = db.get_book(asin)
                         if existing:
                             consecutive_known += 1
-                            if not force and consecutive_known >= early_stop_threshold:
+                            if not force and consecutive_known >= early_stop_threshold and not should_stop:
                                 logger.info(f"Early stop: {consecutive_known} consecutive known books found on page {page_num}")
                                 should_stop = True
-                                break
                         else:
                             consecutive_known = 0
 
