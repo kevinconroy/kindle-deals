@@ -63,7 +63,8 @@ class Database:
                 author VARCHAR(255),
                 cover_url VARCHAR(1000),
                 date_added DATETIME NOT NULL,
-                is_active TINYINT(1) DEFAULT 1
+                is_sample TINYINT(1) DEFAULT 1,
+                is_deleted TINYINT(1) DEFAULT 0
             )
         """)
 
@@ -74,6 +75,30 @@ class Database:
             """)
         except Exception:
             # Ignore if already nullable or other issues
+            pass
+
+        # Migrate is_active -> is_sample + is_deleted (for existing databases)
+        try:
+            cursor.execute("""
+                SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'books' AND COLUMN_NAME = 'is_active'
+            """, (self.database,))
+            if cursor.fetchone():
+                # Old schema detected: add new columns and migrate data
+                try:
+                    cursor.execute("ALTER TABLE books ADD COLUMN is_sample TINYINT(1) DEFAULT 1")
+                except Exception:
+                    pass  # Column may already exist
+                try:
+                    cursor.execute("ALTER TABLE books ADD COLUMN is_deleted TINYINT(1) DEFAULT 0")
+                except Exception:
+                    pass  # Column may already exist
+                # Migrate: is_active=1 -> is_sample=1, is_deleted=0
+                #          is_active=0 -> is_sample=1, is_deleted=1
+                cursor.execute("UPDATE books SET is_sample = 1, is_deleted = CASE WHEN is_active = 0 THEN 1 ELSE 0 END")
+                cursor.execute("ALTER TABLE books DROP COLUMN is_active")
+                self.conn.commit()
+        except Exception:
             pass
 
         # Price history table
@@ -127,7 +152,7 @@ class Database:
         self.conn.commit()
 
     def add_book(self, asin: str, title: str = None, author: str = None,
-                 cover_url: str = None) -> bool:
+                 cover_url: str = None, is_sample: bool = True) -> bool:
         """
         Add a new book to the database.
 
@@ -136,15 +161,16 @@ class Database:
             title: Book title (optional, will be NULL if not provided)
             author: Book author (optional)
             cover_url: URL to book cover image (optional)
+            is_sample: Whether this is a sample (True) or owned book (False)
 
         Returns:
             True if book was newly added, False if already existed
         """
         cursor = self.conn.cursor()
         cursor.execute("""
-            INSERT IGNORE INTO books (asin, title, author, cover_url, date_added, is_active)
-            VALUES (%s, %s, %s, %s, %s, 1)
-        """, (asin, title, author, cover_url, datetime.now()))
+            INSERT IGNORE INTO books (asin, title, author, cover_url, date_added, is_sample, is_deleted)
+            VALUES (%s, %s, %s, %s, %s, %s, 0)
+        """, (asin, title, author, cover_url, datetime.now(), 1 if is_sample else 0))
         self.conn.commit()
 
         # Log how many rows were affected (0 if already exists due to INSERT IGNORE)
@@ -186,9 +212,9 @@ class Database:
         """, (title, author, cover_url, asin))
         self.conn.commit()
 
-    def mark_book_inactive(self, asin: str) -> None:
+    def mark_book_deleted(self, asin: str) -> None:
         """
-        Mark a book as inactive (no longer tracking).
+        Mark a book as deleted (no longer tracking).
 
         Args:
             asin: Amazon Standard Identification Number
@@ -196,24 +222,27 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute("""
             UPDATE books
-            SET is_active = 0
+            SET is_deleted = 1
             WHERE asin = %s
         """, (asin,))
         self.conn.commit()
 
-    def reactivate_book(self, asin: str) -> None:
-        """
-        Mark a book as active (resume tracking).
-
-        Args:
-            asin: Amazon Standard Identification Number
-        """
+    def undelete_book(self, asin: str) -> None:
+        """Restore a deleted book."""
         cursor = self.conn.cursor()
         cursor.execute("""
             UPDATE books
-            SET is_active = 1
+            SET is_deleted = 0
             WHERE asin = %s
         """, (asin,))
+        self.conn.commit()
+
+    def update_book_sample_status(self, asin: str, is_sample: bool) -> None:
+        """Update whether a book is a sample or owned."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE books SET is_sample = %s WHERE asin = %s
+        """, (1 if is_sample else 0, asin))
         self.conn.commit()
 
     def add_price_history(self, asin: str, price: float,
@@ -330,15 +359,15 @@ class Database:
         result = cursor.fetchone()
         return result
 
-    def get_active_books(self) -> List[Dict[str, Any]]:
+    def get_sample_books(self) -> List[Dict[str, Any]]:
         """
-        Get all active books.
+        Get all sample books that are not deleted.
 
         Returns:
             List of dictionaries with book data
         """
         cursor = self.conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM books WHERE is_active = 1")
+        cursor.execute("SELECT * FROM books WHERE is_sample = 1 AND is_deleted = 0")
         results = cursor.fetchall()
         return results
 
@@ -411,7 +440,7 @@ class Database:
             SELECT r.recommended_asin, b.title
             FROM recommendations r
             JOIN books b ON r.source_asin = b.asin
-            WHERE b.is_active = 1
+            WHERE b.is_sample = 1 AND b.is_deleted = 0
         """)
         results = cursor.fetchall()
         return {row['recommended_asin']: row['title'] or 'Unknown' for row in results}

@@ -25,6 +25,8 @@ def clean_db(db):
     # Clear all tables before each test
     cursor = db.conn.cursor()
     cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+    cursor.execute("TRUNCATE TABLE deal_checks")
+    cursor.execute("TRUNCATE TABLE recommendations")
     cursor.execute("TRUNCATE TABLE notifications")
     cursor.execute("TRUNCATE TABLE price_history")
     cursor.execute("TRUNCATE TABLE books")
@@ -89,7 +91,8 @@ def test_add_book(clean_db):
     assert book['title'] == 'Test Book'
     assert book['author'] == 'Test Author'
     assert book['cover_url'] == 'https://example.com/cover.jpg'
-    assert book['is_active'] == 1
+    assert book['is_sample'] == 1
+    assert book['is_deleted'] == 0
     assert book['date_added'] is not None
 
 
@@ -168,21 +171,33 @@ def test_get_last_notification_none(clean_db):
     assert notification is None
 
 
-def test_get_active_books(clean_db):
-    """Test getting all active books."""
+def test_get_sample_books(clean_db):
+    """Test getting all sample books."""
     # Add multiple books
     clean_db.add_book(asin='B001', title='Book 1')
     clean_db.add_book(asin='B002', title='Book 2')
     clean_db.add_book(asin='B003', title='Book 3')
 
-    books = clean_db.get_active_books()
+    books = clean_db.get_sample_books()
     assert len(books) == 3
-    assert all(book['is_active'] == 1 for book in books)
+    assert all(book['is_sample'] == 1 for book in books)
+    assert all(book['is_deleted'] == 0 for book in books)
 
 
-def test_get_active_books_empty(clean_db):
-    """Test getting active books when database is empty."""
-    books = clean_db.get_active_books()
+def test_get_sample_books_excludes_deleted(clean_db):
+    """Test that get_sample_books excludes deleted books."""
+    clean_db.add_book(asin='B001', title='Book 1')
+    clean_db.add_book(asin='B002', title='Book 2')
+    clean_db.mark_book_deleted('B002')
+
+    books = clean_db.get_sample_books()
+    assert len(books) == 1
+    assert books[0]['asin'] == 'B001'
+
+
+def test_get_sample_books_empty(clean_db):
+    """Test getting sample books when database is empty."""
+    books = clean_db.get_sample_books()
     assert len(books) == 0
 
 
@@ -213,6 +228,44 @@ def test_multiple_notifications(clean_db):
     # Should get the most recent
     notification = clean_db.get_last_notification('B001234567')
     assert float(notification['notified_price']) == 9.99
+
+
+def test_add_owned_book(clean_db):
+    """Test adding an owned (non-sample) book."""
+    clean_db.add_book(asin='B001234567', title='Owned Book', is_sample=False)
+
+    book = clean_db.get_book('B001234567')
+    assert book['is_sample'] == 0
+    assert book['is_deleted'] == 0
+
+
+def test_mark_book_deleted(clean_db):
+    """Test marking a book as deleted."""
+    clean_db.add_book(asin='B001', title='Test Book')
+    clean_db.mark_book_deleted('B001')
+
+    book = clean_db.get_book('B001')
+    assert book['is_deleted'] == 1
+    assert book['is_sample'] == 1  # sample status preserved
+
+
+def test_undelete_book(clean_db):
+    """Test undeleting a book."""
+    clean_db.add_book(asin='B001', title='Test Book')
+    clean_db.mark_book_deleted('B001')
+    clean_db.undelete_book('B001')
+
+    book = clean_db.get_book('B001')
+    assert book['is_deleted'] == 0
+
+
+def test_update_book_sample_status(clean_db):
+    """Test updating a book's sample status."""
+    clean_db.add_book(asin='B001', title='Test Book', is_sample=True)
+    clean_db.update_book_sample_status('B001', is_sample=False)
+
+    book = clean_db.get_book('B001')
+    assert book['is_sample'] == 0
 
 
 def test_foreign_key_constraint(clean_db):

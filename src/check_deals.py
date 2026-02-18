@@ -382,14 +382,14 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                 # Get books to check
                 if target_asin:
                     book = db.get_book(target_asin)
-                    if book and book['is_active'] == 0:
-                        logger.warning(f"Book {target_asin} is marked as inactive - skipping")
+                    if book and (book['is_sample'] == 0 or book['is_deleted'] == 1):
+                        logger.warning(f"Book {target_asin} is not a sample or is deleted - skipping")
                         books = []
                     else:
                         books = [book] if book else []
                 else:
-                    books = db.get_active_books()
-                    logger.debug(f"Fetched {len(books)} books from get_active_books()")
+                    books = db.get_sample_books()
+                    logger.debug(f"Fetched {len(books)} books from get_sample_books()")
 
                 # Filter out inactive books and books already checked today (unless force flag is set)
                 books_to_check = []
@@ -398,8 +398,8 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
 
                 for book in books:
                     # Double-check that book is actually active (safety check)
-                    if book['is_active'] == 0:
-                        logger.debug(f"Skipping {book['title'] or book['asin']} (inactive)")
+                    if book['is_sample'] == 0 or book['is_deleted'] == 1:
+                        logger.debug(f"Skipping {book['title'] or book['asin']} (not sample or deleted)")
                         inactive_count += 1
                         continue
 
@@ -438,7 +438,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                         if book_info.get('already_owned'):
                             logger.info(f"Marking {asin} as inactive (already owned)")
                             if not dry_run:
-                                db.mark_book_inactive(asin)
+                                db.mark_book_deleted(asin)
                             continue
 
                         current_price = book_info['current_price']

@@ -27,7 +27,7 @@ class SimilarityMatcher:
     def _load_cache(self) -> None:
         """Load matching data from database into memory."""
         # Get all active sample books
-        books = self.db.get_active_books()
+        books = self.db.get_sample_books()
 
         for book in books:
             # Store author (normalized)

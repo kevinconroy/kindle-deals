@@ -222,7 +222,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
                 return
 
             # Get list of currently active books before syncing
-            active_books_before = {book['asin'] for book in db.get_active_books()}
+            active_books_before = {book['asin'] for book in db.get_sample_books()}
 
             # Add books to database
             logger.info(f"Adding {len(samples)} books to database...")
@@ -249,10 +249,10 @@ def sync_library(config: Config, db: Database, dry_run: bool = False, login_mode
             # Mark books as inactive if they're no longer in the samples list
             removed_asins = active_books_before - synced_asins
             if removed_asins:
-                logger.info(f"Marking {len(removed_asins)} books as inactive (no longer in samples)")
+                logger.info(f"Marking {len(removed_asins)} books as deleted (no longer in samples)")
                 for asin in removed_asins:
-                    db.mark_book_inactive(asin)
-                    logger.debug(f"Marked {asin} as inactive")
+                    db.mark_book_deleted(asin)
+                    logger.debug(f"Marked {asin} as deleted")
 
             logger.info(f"Successfully added {added_count} new books, {skipped_count} already existed, {len(removed_asins)} removed")
 
