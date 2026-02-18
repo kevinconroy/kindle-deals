@@ -118,8 +118,8 @@ def add_samples_to_collection(page, items: list, collection_name: str, dry_run: 
     try:
         # Check the checkbox for each uncollected sample
         for item in uncollected:
-            # TODO: verify selector against live page
-            checkbox = page.locator(f'input[type="checkbox"][value="{item["asin"]}"]').first
+            # Checkbox id format: "{ASIN}:KindleEBookSample"
+            checkbox = page.locator(f'input[id="{item["asin"]}:KindleEBookSample"]').first
             if checkbox.count() > 0 and not checkbox.is_checked():
                 checkbox.check()
                 logger.debug(f"Checked box for {item['asin']}")
@@ -219,8 +219,8 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
             page.wait_for_load_state('domcontentloaded')
             page.wait_for_timeout(2000)
 
-            # Check if we can find any ASINs - if not, we're probably not logged in
-            book_divs_count = page.locator('.digital_entity_title').count()
+            # Check if we can find any items - if not, we're probably not logged in
+            book_divs_count = page.locator('input[type="checkbox"][id*=":Kindle"]').count()
 
             if book_divs_count == 0:
                 # No content found - check if we're at a login page
@@ -277,55 +277,37 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                     page.goto(f"https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber={page_num}")
                     page.wait_for_load_state('networkidle')
 
-                # Find all book divs with class "digital_entity_title"
-                book_divs = page.locator('.digital_entity_title').all()
+                # Find all item checkboxes — their id format is "{ASIN}:KindleEBook" or "{ASIN}:KindleEBookSample"
+                # This gives us both the ASIN and sample/owned classification in one selector
+                checkboxes = page.locator('input[type="checkbox"][id*=":Kindle"]').all()
 
-                if not book_divs:
+                if not checkboxes:
                     logger.info(f"No books found on page {page_num}, stopping")
                     break
 
-                logger.info(f"Found {len(book_divs)} books on page {page_num}")
+                logger.info(f"Found {len(checkboxes)} books on page {page_num}")
 
                 page_items = []
 
-                for div in book_divs:
+                for checkbox in checkboxes:
                     try:
-                        # Extract ASIN from div id (format: "content-title-B076NTR2WX")
-                        div_id = div.get_attribute('id')
-                        if not div_id or not div_id.startswith('content-title-'):
-                            logger.warning(f"Skipping div without valid id: {div_id}")
+                        checkbox_id = checkbox.get_attribute('id')
+                        if not checkbox_id or ':' not in checkbox_id:
+                            logger.warning(f"Skipping checkbox without valid id: {checkbox_id}")
                             continue
 
-                        asin = div_id.replace('content-title-', '')
+                        # Parse "{ASIN}:KindleEBookSample" or "{ASIN}:KindleEBook"
+                        asin, kind = checkbox_id.split(':', 1)
+                        is_sample = 'Sample' in kind
 
-                        # Detect if this is a sample
-                        # Look for "Sample" text in a sibling/nearby element
-                        # NOTE: Selector needs verification against live page
-                        is_sample = False
-                        try:
-                            # The item container typically has a category/type label
-                            # Try looking for "Sample" text near this item
-                            item_container = div.locator('xpath=ancestor::div[contains(@id, "content-")]').first
-                            if item_container.count() > 0:
-                                sample_text = item_container.locator('text=Sample').first
-                                is_sample = sample_text.count() > 0
-                            else:
-                                # Fallback: check the direct parent area
-                                parent = div.locator('xpath=..').first
-                                if parent.count() > 0:
-                                    sample_text = parent.locator('text=Sample').first
-                                    is_sample = sample_text.count() > 0
-                        except Exception as e:
-                            logger.debug(f"Could not detect sample status for {asin}: {e}")
-                            is_sample = True  # Default to sample if detection fails
-
-                        # Also detect collection count (for Task 5 - collection management)
+                        # Detect collection count for samples
                         collection_count = 0
                         if is_sample:
                             try:
-                                container = div.locator('xpath=ancestor::div[contains(@id, "content-")]').first
-                                if container.count() > 0:
-                                    coll_text = container.locator('text=/\\d+ Collection/').first
+                                # Look for collection count text near this item's row
+                                row = checkbox.locator('xpath=ancestor::div[contains(@class, "digital_entity")]').first
+                                if row.count() > 0:
+                                    coll_text = row.locator('text=/\\d+ Collection/').first
                                     if coll_text.count() > 0:
                                         text = coll_text.inner_text()
                                         match = re.search(r'(\d+)\s+Collection', text)
