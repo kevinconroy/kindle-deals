@@ -129,8 +129,7 @@ def add_samples_to_collection(page, items: list, collection_name: str, dry_run: 
         page.wait_for_timeout(500)
 
         # Click "Add to Collections" button
-        # TODO: verify selector against live page
-        add_btn = page.locator('button:has-text("Add to Collections"), a:has-text("Add to Collections"), span:has-text("Add to Collections")').first
+        add_btn = page.locator('.action-button[aria-label="Add to Collections"]').first
         if add_btn.count() == 0:
             logger.warning("Could not find 'Add to Collections' button")
             return 0
@@ -138,24 +137,27 @@ def add_samples_to_collection(page, items: list, collection_name: str, dry_run: 
         add_btn.click()
         page.wait_for_timeout(1000)
 
-        # Select the target collection from the dialog/dropdown
-        # TODO: verify selector against live page
-        collection_option = page.locator(f'label:has-text("{collection_name}"), span:has-text("{collection_name}"), div:has-text("{collection_name}")').first
-        if collection_option.count() == 0:
+        # Find the collection checkbox in the bulk-add dialog
+        # Checkboxes have ids like "BULK_ADD_TO_COLLECTION_DIALOG_ID_0"
+        # Find the one next to a div containing the collection name
+        collection_row = page.locator(f'div:has-text("{collection_name}")').locator('input[id^="BULK_ADD_TO_COLLECTION_DIALOG_ID_"]').first
+        if collection_row.count() == 0:
+            # Fallback: try finding the checkbox near the text
+            collection_row = page.locator(f'input[id^="BULK_ADD_TO_COLLECTION_DIALOG_ID_"]').locator(f'xpath=ancestor::*[contains(.,"{collection_name}")]//input[starts-with(@id,"BULK_ADD_TO_COLLECTION_DIALOG_ID_")]').first
+        if collection_row.count() == 0:
             logger.error(f"Collection '{collection_name}' not found in picker")
-            # Try to close the dialog
             try:
                 page.keyboard.press('Escape')
             except Exception:
                 pass
             return 0
 
-        collection_option.click()
+        if not collection_row.is_checked():
+            collection_row.check()
         page.wait_for_timeout(500)
 
-        # Confirm/submit the dialog
-        # TODO: verify selector against live page
-        confirm_btn = page.locator('button:has-text("Add"), button:has-text("Done"), button:has-text("Save")').first
+        # Confirm the dialog
+        confirm_btn = page.locator('#BULK_ADD_TO_COLLECTION_ACTION_ID_CONFIRM').first
         if confirm_btn.count() > 0:
             confirm_btn.click()
             page.wait_for_timeout(1000)
