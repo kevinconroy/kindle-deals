@@ -89,6 +89,89 @@ def scrape_recommendations(page, asin: str) -> List[str]:
         return []
 
 
+def add_samples_to_collection(page, items: list, collection_name: str, dry_run: bool = False) -> int:
+    """
+    Add uncollected samples on the current page to a collection.
+
+    Args:
+        page: Playwright page object
+        items: List of item dicts with 'asin', 'is_sample', 'collection_count'
+        collection_name: Name of the collection to add to
+        dry_run: If True, don't actually make changes
+
+    Returns:
+        Number of samples that would be/were added to collection
+    """
+    # Find samples with 0 collections
+    uncollected = [item for item in items if item['is_sample'] and item['collection_count'] == 0]
+
+    if not uncollected:
+        return 0
+
+    logger.info(f"Found {len(uncollected)} uncollected samples on this page")
+
+    if dry_run:
+        for item in uncollected:
+            logger.info(f"  DRY RUN: Would add {item['asin']} to '{collection_name}'")
+        return len(uncollected)
+
+    try:
+        # Check the checkbox for each uncollected sample
+        for item in uncollected:
+            # TODO: verify selector against live page
+            checkbox = page.locator(f'input[type="checkbox"][value="{item["asin"]}"]').first
+            if checkbox.count() > 0 and not checkbox.is_checked():
+                checkbox.check()
+                logger.debug(f"Checked box for {item['asin']}")
+            else:
+                logger.warning(f"Could not find checkbox for {item['asin']}")
+
+        page.wait_for_timeout(500)
+
+        # Click "Add to Collections" button
+        # TODO: verify selector against live page
+        add_btn = page.locator('button:has-text("Add to Collections"), a:has-text("Add to Collections"), span:has-text("Add to Collections")').first
+        if add_btn.count() == 0:
+            logger.warning("Could not find 'Add to Collections' button")
+            return 0
+
+        add_btn.click()
+        page.wait_for_timeout(1000)
+
+        # Select the target collection from the dialog/dropdown
+        # TODO: verify selector against live page
+        collection_option = page.locator(f'label:has-text("{collection_name}"), span:has-text("{collection_name}"), div:has-text("{collection_name}")').first
+        if collection_option.count() == 0:
+            logger.error(f"Collection '{collection_name}' not found in picker")
+            # Try to close the dialog
+            try:
+                page.keyboard.press('Escape')
+            except Exception:
+                pass
+            return 0
+
+        collection_option.click()
+        page.wait_for_timeout(500)
+
+        # Confirm/submit the dialog
+        # TODO: verify selector against live page
+        confirm_btn = page.locator('button:has-text("Add"), button:has-text("Done"), button:has-text("Save")').first
+        if confirm_btn.count() > 0:
+            confirm_btn.click()
+            page.wait_for_timeout(1000)
+
+        logger.info(f"Added {len(uncollected)} samples to '{collection_name}'")
+        return len(uncollected)
+
+    except Exception as e:
+        logger.warning(f"Failed to add samples to collection: {e}")
+        try:
+            page.keyboard.press('Escape')
+        except Exception:
+            pass
+        return 0
+
+
 def sync_library(config: Config, db: Database, dry_run: bool = False,
                  login_mode: bool = False, headless_override: bool = None,
                  force: bool = False, skip_collections: bool = False):
@@ -183,6 +266,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
             early_stop_threshold = config.get('sync.early_stop_threshold', 10)
             should_stop = False
             all_items = []
+            total_collections_added = 0
 
             # Scrape all pages
             for page_num in range(1, total_pages + 1):
@@ -274,6 +358,16 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
 
                 all_items.extend(page_items)
 
+                # Collection management (batch per page)
+                if not skip_collections:
+                    try:
+                        collection_name = config.get('sync.collection_name', 'Read Me 2026')
+                        added = add_samples_to_collection(page, page_items, collection_name, dry_run)
+                        if added > 0:
+                            total_collections_added += added
+                    except Exception as e:
+                        logger.warning(f"Collection management error on page {page_num}: {e}")
+
                 if should_stop:
                     logger.info("Stopping sync early (use --force for full sync)")
                     break
@@ -282,6 +376,8 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
 
             if dry_run:
                 logger.info(f"DRY RUN: Would process {len(all_items)} books")
+                if total_collections_added > 0:
+                    logger.info(f"DRY RUN: Would add {total_collections_added} samples to collection")
                 return
 
             # Add/update books in database
@@ -317,6 +413,9 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                     logger.error(f"Failed to process ASIN {item['asin']}: {e}")
 
             logger.info(f"Added {added_count} new, {updated_count} updated, {skipped_count} unchanged")
+
+            if total_collections_added > 0:
+                logger.info(f"Collections: added {total_collections_added} samples to collection")
 
             # Only mark books as deleted during --force full syncs
             if force and not dry_run:
