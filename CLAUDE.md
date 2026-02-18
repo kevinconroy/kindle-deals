@@ -62,12 +62,24 @@ pytest --cov=src
 
 # Skip daily deals, only check sample books
 ./check_all_deals.sh --skip-daily
+
+# Force full sync (disable early stopping)
+./check_all_deals.sh --force
+
+# Skip auto-adding samples to collection
+./check_all_deals.sh --skip-collections
 ```
 
 **Individual Scripts:**
 ```bash
-# Sync Kindle library from Amazon "My Books" page
+# Sync Kindle library from Amazon digital console
 python src/sync_library.py
+
+# Force full sync (disable early stopping, enable removal tracking)
+python src/sync_library.py --force
+
+# Skip auto-adding uncollected samples to collection
+python src/sync_library.py --skip-collections
 
 # Check for deals (sample books + daily deals)
 python src/check_deals.py
@@ -140,11 +152,17 @@ The application consists of five main modules:
   - Handles virtual environment activation
   - Runs library sync with recommendations
   - Checks deals on sample books and daily deals
-  - Supports `--dry-run`, `--verbose`, `--skip-sync`, `--skip-samples`, `--skip-daily` flags
+  - Supports `--dry-run`, `--verbose`, `--force`, `--skip-sync`, `--skip-samples`, `--skip-daily`, `--skip-collections` flags
 
 **Individual Scripts:**
-1. **sync_library.py** - Syncs your Kindle library from Amazon "My Books" page using Playwright
+1. **sync_library.py** - Syncs your Kindle library from Amazon digital console using Playwright
+   - Scrapes both owned books and samples from `booksAll` URL
+   - Classifies items as sample (`is_sample=1`) or owned (`is_sample=0`)
+   - Early-stop optimization: stops after N consecutive known ASINs (configurable, default 10)
+   - Auto-adds uncollected samples to a configurable collection (e.g., "Read Me 2026")
    - Also scrapes "also bought" recommendations for each sample
+   - `--force` disables early stopping and enables removal tracking
+   - `--skip-collections` skips collection management
 2. **check_deals.py** - Checks book prices and daily deals via web scraping, sends notifications
    - Handles both sample book price checks and daily deals matching
    - Supports `--skip-samples` and `--skip-daily` flags for granular control
@@ -162,11 +180,12 @@ CREATE TABLE books (
     author VARCHAR(255),
     cover_url VARCHAR(1000),
     date_added DATETIME NOT NULL,
-    is_active TINYINT(1) DEFAULT 1
+    is_sample TINYINT(1) DEFAULT 1,
+    is_deleted TINYINT(1) DEFAULT 0
 )
 ```
 
-Note: Title can be NULL when books are first synced from library (ASIN only). The check_deals script will fetch and populate title/author/cover_url via web scraping.
+Note: Title can be NULL when books are first synced from library (ASIN only). The check_deals script will fetch and populate title/author/cover_url via web scraping. `is_sample=1` for samples, `0` for owned books. `is_deleted=1` for books removed from library (only tracked during `--force` full syncs).
 
 ### price_history table
 ```sql
@@ -276,12 +295,16 @@ Configuration is stored in `config.yaml` (created from `config.yaml.example`).
 - `min_discount_percent`: Minimum discount percentage (default: 50)
 - `notification_cooldown_days`: Days before re-notifying about same book
 
-**scraping** - Playwright browser settings (for "My Books" collection only)
+**scraping** - Playwright browser settings
 - `headless`: Run browser in headless mode
 - `page_load_timeout`: Page load timeout in milliseconds
 - `element_timeout`: Element wait timeout in milliseconds
 - `check_delay`: Delay between checking different books
 - `action_delay`: Delay between page actions
+
+**sync** - Library sync settings
+- `collection_name`: Collection to auto-add uncollected samples to (default: "Read Me 2026")
+- `early_stop_threshold`: Stop after this many consecutive known ASINs (default: 10)
 
 ## Testing
 
