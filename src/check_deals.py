@@ -173,31 +173,43 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
         if not cover_url:
             logger.debug(f"Could not find cover for {asin}")
 
-        # Extract Kindle price
+        # Extract Kindle price (buy price, not Kindle Unlimited)
         current_price = None
         try:
-            # Try multiple selectors for Kindle price
-            price_selectors = [
-                '.ebook-price-value',
-                'span.a-price .a-offscreen',
-                '.kindle-price .a-color-price',
-                '#kindle-price',
-                '#price',
-                '.a-price .a-offscreen'
-            ]
-            for selector in price_selectors:
-                try:
-                    price_elem = page.locator(selector).first
-                    if price_elem.count() > 0:
-                        price_text = price_elem.inner_text().strip()
-                        # Extract number from price text (e.g., "$3.99" -> 3.99)
-                        match = re.search(r'\$?(\d+\.\d{2})', price_text)
-                        if match:
-                            current_price = float(match.group(1))
-                            logger.debug(f"Found current price: ${current_price} using {selector}")
-                            break
-                except Exception:
-                    continue
+            # First check for "or $X.XX to buy" (Kindle Unlimited books show $0.00 + buy price)
+            try:
+                ku_buy = page.locator('.kindleExtraMessage').first
+                if ku_buy.count() > 0:
+                    ku_text = ku_buy.inner_text().strip()
+                    match = re.search(r'\$(\d+\.\d{2})\s+to buy', ku_text)
+                    if match:
+                        current_price = float(match.group(1))
+                        logger.debug(f"Found buy price (KU book): ${current_price}")
+            except Exception:
+                pass
+
+            # Fall back to standard price selectors
+            if current_price is None:
+                price_selectors = [
+                    '.ebook-price-value',
+                    'span.a-price .a-offscreen',
+                    '.kindle-price .a-color-price',
+                    '#kindle-price',
+                    '#price',
+                    '.a-price .a-offscreen'
+                ]
+                for selector in price_selectors:
+                    try:
+                        price_elem = page.locator(selector).first
+                        if price_elem.count() > 0:
+                            price_text = price_elem.inner_text().strip()
+                            match = re.search(r'\$?(\d+\.\d{2})', price_text)
+                            if match:
+                                current_price = float(match.group(1))
+                                logger.debug(f"Found current price: ${current_price} using {selector}")
+                                break
+                    except Exception:
+                        continue
 
             if not current_price:
                 logger.debug(f"Could not find current price for {asin}")
