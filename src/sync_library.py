@@ -193,41 +193,41 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
         page = scraper.new_page()
 
         try:
-            # Login mode: Let user log in before scraping
-            if login_mode:
-                logger.info("Opening Amazon for login...")
-                page.goto("https://www.amazon.com")
-                page.wait_for_load_state('networkidle')
-
-                print("\n" + "=" * 70)
-                print("  Please log in to your Amazon account in the browser window")
-                print("=" * 70)
-                print("\nOnce you're logged in, press Enter to continue...")
-                input()
-
-                logger.info("Login complete, saving session...")
-
-            # First navigate to Amazon homepage to ensure session is loaded
-            logger.info("Loading Amazon homepage...")
-            page.goto("https://www.amazon.com")
-            page.wait_for_load_state('domcontentloaded')
-            page.wait_for_timeout(2000)  # Give cookies/session time to settle
-
-            # Now navigate to All Books page (includes both owned and samples)
+            # Navigate directly to library page — if session is valid, we'll get books
             logger.info("Navigating to Amazon All Books...")
             page.goto("https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber=1")
-
-            # Wait for page to load
             page.wait_for_load_state('domcontentloaded')
             page.wait_for_timeout(2000)
 
-            # Check if we can find any items - if not, we're probably not logged in
+            # Check if we got books or a login page
             book_divs_count = page.locator('input[type="checkbox"][id*=":Kindle"]').count()
 
             if book_divs_count == 0:
-                # No content found - check if we're at a login page
-                if page.locator('input[name="password"]').count() > 0 or page.locator('h1:has-text("Sign")').count() > 0:
-                    # Save screenshot for debugging
+                # No books found — check if we hit a login page
+                is_login_page = (page.locator('input[name="password"]').count() > 0
+                                 or page.locator('h1:has-text("Sign")').count() > 0)
+
+                if is_login_page and login_mode:
+                    # Login mode: wait for user to log in, then retry
+                    print("\n" + "=" * 70)
+                    print("  Please log in to your Amazon account in the browser window")
+                    print("=" * 70)
+                    print("\nOnce you're logged in, press Enter to continue...")
+                    input()
+
+                    logger.info("Login complete, navigating to library...")
+                    page.goto("https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber=1")
+                    page.wait_for_load_state('domcontentloaded')
+                    page.wait_for_timeout(2000)
+                    book_divs_count = page.locator('input[type="checkbox"][id*=":Kindle"]').count()
+
+                    if book_divs_count == 0:
+                        screenshot_path = os.path.expanduser("~/.kindle-deals/empty-page.png")
+                        os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+                        page.screenshot(path=screenshot_path)
+                        logger.error(f"Still no books found after login. Screenshot saved to {screenshot_path}")
+                        sys.exit(2)
+                elif is_login_page:
                     screenshot_path = os.path.expanduser("~/.kindle-deals/login-required.png")
                     os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
                     page.screenshot(path=screenshot_path)
@@ -235,13 +235,13 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                     logger.error("Please run with --login to log in and save your session.")
                     sys.exit(2)
                 else:
-                    # Save screenshot for debugging unexpected empty pages
                     screenshot_path = os.path.expanduser("~/.kindle-deals/empty-page.png")
                     os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
                     page.screenshot(path=screenshot_path)
                     logger.warning(f"No books found on page - screenshot saved to {screenshot_path}")
                     logger.warning("Your library may be empty or the page structure may have changed")
-            else:
+
+            if book_divs_count > 0:
                 logger.info(f"Successfully loaded All Books page - found {book_divs_count} items")
 
             # Get total count from CONTENT_COUNT element
