@@ -178,6 +178,7 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
         try:
             # Try multiple selectors for Kindle price
             price_selectors = [
+                'span.a-price .a-offscreen',
                 '.kindle-price .a-color-price',
                 '#kindle-price',
                 '#price',
