@@ -378,12 +378,13 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
 
                     existing = db.get_book(asin)
                     if existing:
-                        # Update sample status if changed (e.g., user bought a sample)
+                        # Only upgrade sample → owned, never revert owned → sample
+                        # (a user can have both a sample and owned copy of the same ASIN)
                         current_is_sample = existing['is_sample'] == 1
-                        if current_is_sample != is_sample:
-                            logger.info(f"ASIN {asin} status changed: {'owned -> sample' if is_sample else 'sample -> owned'}")
+                        if current_is_sample and not is_sample:
+                            logger.info(f"ASIN {asin} upgraded: sample -> owned")
                             if not dry_run:
-                                db.update_book_sample_status(asin, is_sample)
+                                db.update_book_sample_status(asin, False)
                             updated_count += 1
                         else:
                             skipped_count += 1
