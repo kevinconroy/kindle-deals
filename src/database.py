@@ -64,7 +64,8 @@ class Database:
                 cover_url VARCHAR(1000),
                 date_added DATETIME NOT NULL,
                 is_sample TINYINT(1) DEFAULT 1,
-                is_deleted TINYINT(1) DEFAULT 0
+                is_deleted TINYINT(1) DEFAULT 0,
+                is_recommendation TINYINT(1) DEFAULT 0
             )
         """)
 
@@ -97,6 +98,18 @@ class Database:
                 #          is_active=0 -> is_sample=1, is_deleted=1
                 cursor.execute("UPDATE books SET is_sample = 1, is_deleted = CASE WHEN is_active = 0 THEN 1 ELSE 0 END")
                 cursor.execute("ALTER TABLE books DROP COLUMN is_active")
+                self.conn.commit()
+        except Exception:
+            pass
+
+        # Migrate: add is_recommendation column (for existing databases)
+        try:
+            cursor.execute("""
+                SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'books' AND COLUMN_NAME = 'is_recommendation'
+            """, (self.database,))
+            if not cursor.fetchone():
+                cursor.execute("ALTER TABLE books ADD COLUMN is_recommendation TINYINT(1) DEFAULT 0")
                 self.conn.commit()
         except Exception:
             pass
