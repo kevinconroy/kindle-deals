@@ -25,6 +25,7 @@ deals:
   max_price: 4.00
   min_discount_percent: 50
   notification_cooldown_days: 30
+  recommendation_concurrency: 3  # number of parallel browser tabs for recommendation checking
 
 scraping:
   headless: true

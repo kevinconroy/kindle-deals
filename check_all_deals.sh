@@ -44,6 +44,7 @@ SKIP_SAMPLES=""
 SKIP_DAILY=""
 SKIP_COLLECTIONS=""
 LOGIN=""
+SKIP_RECOMMENDATIONS=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -79,6 +80,10 @@ while [[ $# -gt 0 ]]; do
             LOGIN="--login"
             shift
             ;;
+        --skip-recommendations)
+            SKIP_RECOMMENDATIONS="--skip-recommendations"
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [options]"
             echo ""
@@ -91,6 +96,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-daily     Skip daily deals check"
             echo "  --skip-collections  Skip auto-adding samples to collection"
             echo "  --login          Log in to Amazon (interactive, saves session)"
+            echo "  --skip-recommendations  Skip checking recommended book prices"
             echo "  --help, -h       Show this help message"
             echo ""
             exit 0
@@ -128,7 +134,7 @@ fi
 echo -e "${GREEN}Step 2: Checking deals...${NC}"
 echo ""
 
-if python src/check_deals.py $DRY_RUN $VERBOSE $FORCE $SKIP_SAMPLES $SKIP_DAILY; then
+if python src/check_deals.py $DRY_RUN $VERBOSE $FORCE $SKIP_SAMPLES $SKIP_DAILY $SKIP_RECOMMENDATIONS; then
     echo ""
     echo -e "${GREEN}✓ Deal check complete${NC}"
     echo ""
