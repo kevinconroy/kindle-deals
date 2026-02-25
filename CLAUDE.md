@@ -68,6 +68,9 @@ pytest --cov=src
 
 # Skip auto-adding samples to collection
 ./check_all_deals.sh --skip-collections
+
+# Skip recommended book price checks
+./check_all_deals.sh --skip-recommendations
 ```
 
 **Individual Scripts:**
@@ -92,6 +95,9 @@ python src/check_deals.py --skip-samples
 
 # Skip daily deals, only check sample books
 python src/check_deals.py --skip-daily
+
+# Skip recommended book price checks
+python src/check_deals.py --skip-recommendations
 
 # Send test email notification
 python src/send_notification.py --test
@@ -130,6 +136,7 @@ The application consists of five main modules:
 4. **email_notifier.py** - Email notification system
    - Sends HTML emails via SMTP
    - Generates formatted deal notifications with book covers
+   - Two-section layout: "Tracked Deals" and "Recommended Deals" (with backward-compatible flat layout)
    - Shows current price, list price, and previous price for comparison
    - Displays both overall savings and new price drops
    - Supports Gmail SMTP (configurable)
@@ -152,7 +159,7 @@ The application consists of five main modules:
   - Handles virtual environment activation
   - Runs library sync with recommendations
   - Checks deals on sample books and daily deals
-  - Supports `--dry-run`, `--verbose`, `--force`, `--skip-sync`, `--skip-samples`, `--skip-daily`, `--skip-collections` flags
+  - Supports `--dry-run`, `--verbose`, `--force`, `--skip-sync`, `--skip-samples`, `--skip-daily`, `--skip-collections`, `--skip-recommendations` flags
 
 **Individual Scripts:**
 1. **sync_library.py** - Syncs your Kindle library from Amazon digital console using Playwright
@@ -163,9 +170,11 @@ The application consists of five main modules:
    - Also scrapes "also bought" recommendations for each sample
    - `--force` disables early stopping and enables removal tracking
    - `--skip-collections` skips collection management
-2. **check_deals.py** - Checks book prices and daily deals via web scraping, sends notifications
-   - Handles both sample book price checks and daily deals matching
-   - Supports `--skip-samples` and `--skip-daily` flags for granular control
+2. **check_deals.py** - Checks book prices, daily deals, and recommended books via web scraping, sends notifications
+   - Phase 1: Sample book price checks
+   - Phase 2: Daily deals matching (by author, series, or recommendation)
+   - Phase 3: Parallel recommendation price checking using ThreadPoolExecutor with configurable concurrency
+   - Supports `--skip-samples`, `--skip-daily`, and `--skip-recommendations` flags for granular control
 3. **send_notification.py** - Sends test email notifications
 
 ## Database Schema
@@ -181,11 +190,12 @@ CREATE TABLE books (
     cover_url VARCHAR(1000),
     date_added DATETIME NOT NULL,
     is_sample TINYINT(1) DEFAULT 1,
-    is_deleted TINYINT(1) DEFAULT 0
+    is_deleted TINYINT(1) DEFAULT 0,
+    is_recommendation TINYINT(1) DEFAULT 0
 )
 ```
 
-Note: Title can be NULL when books are first synced from library (ASIN only). The check_deals script will fetch and populate title/author/cover_url via web scraping. `is_sample=1` for samples, `0` for owned books. `is_deleted=1` for books removed from library (only tracked during `--force` full syncs).
+Note: Title can be NULL when books are first synced from library (ASIN only). The check_deals script will fetch and populate title/author/cover_url via web scraping. `is_sample=1` for samples, `0` for owned books. `is_deleted=1` for books removed from library (only tracked during `--force` full syncs). `is_recommendation=1` for books added via recommendation price checking (not in user's library).
 
 ### price_history table
 ```sql
@@ -294,6 +304,7 @@ Configuration is stored in `config.yaml` (created from `config.yaml.example`).
 - `max_price`: Maximum price for automatic deals (default: 4.00)
 - `min_discount_percent`: Minimum discount percentage (default: 50)
 - `notification_cooldown_days`: Days before re-notifying about same book
+- `recommendation_concurrency`: Number of parallel browser tabs for recommendation checking (default: 3)
 
 **scraping** - Playwright browser settings
 - `headless`: Run browser in headless mode
