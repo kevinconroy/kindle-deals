@@ -277,3 +277,90 @@ def test_foreign_key_constraint(clean_db):
             price=9.99,
             list_price=14.99
         )
+
+
+def test_get_unchecked_recommendation_asins(clean_db):
+    """Test getting recommendation ASINs not yet checked today."""
+    # Add sample books
+    clean_db.add_book(asin='B001', title='Sample Book 1')
+    clean_db.add_book(asin='B002', title='Sample Book 2')
+
+    # Add recommendations
+    clean_db.add_recommendation('B001', 'R001')
+    clean_db.add_recommendation('B001', 'R002')
+    clean_db.add_recommendation('B002', 'R003')
+
+    # All three should be unchecked
+    unchecked = clean_db.get_unchecked_recommendation_asins()
+    assert set(unchecked) == {'R001', 'R002', 'R003'}
+
+    # Mark one as checked today
+    clean_db.add_deal_check('R001', was_deal=False, notified=False)
+
+    # Now only two should be unchecked
+    unchecked = clean_db.get_unchecked_recommendation_asins()
+    assert set(unchecked) == {'R002', 'R003'}
+
+
+def test_get_unchecked_recommendation_asins_excludes_deleted_sources(clean_db):
+    """Test that recommendations from deleted source books are excluded."""
+    clean_db.add_book(asin='B001', title='Active Sample')
+    clean_db.add_book(asin='B002', title='Deleted Sample')
+    clean_db.mark_book_deleted('B002')
+
+    clean_db.add_recommendation('B001', 'R001')
+    clean_db.add_recommendation('B002', 'R002')
+
+    unchecked = clean_db.get_unchecked_recommendation_asins()
+    assert unchecked == ['R001']
+
+
+def test_add_recommendation_book_new(clean_db):
+    """Test adding a new recommendation book."""
+    clean_db.add_recommendation_book('R001', 'Rec Book', 'Rec Author', 'https://example.com/cover.jpg')
+
+    book = clean_db.get_book('R001')
+    assert book is not None
+    assert book['title'] == 'Rec Book'
+    assert book['author'] == 'Rec Author'
+    assert book['is_sample'] == 0
+    assert book['is_recommendation'] == 1
+
+
+def test_add_recommendation_book_existing_sample(clean_db):
+    """Test that adding a recommendation book doesn't override existing sample."""
+    # Book already exists as a sample
+    clean_db.add_book(asin='B001', title='My Sample', author='Original Author')
+
+    # Try to add as recommendation - should update metadata but keep is_sample=1
+    clean_db.add_recommendation_book('B001', 'Updated Title', 'Updated Author', 'https://example.com/new.jpg')
+
+    book = clean_db.get_book('B001')
+    assert book['is_sample'] == 1  # Preserved
+    assert book['is_recommendation'] == 0  # Not changed to recommendation
+    assert book['title'] == 'Updated Title'  # Metadata updated
+
+
+def test_add_recommendation_book_updates_metadata(clean_db):
+    """Test that re-adding a recommendation book updates metadata."""
+    clean_db.add_recommendation_book('R001', None, None, None)
+    clean_db.add_recommendation_book('R001', 'Now Has Title', 'Now Has Author', 'https://example.com/cover.jpg')
+
+    book = clean_db.get_book('R001')
+    assert book['title'] == 'Now Has Title'
+    assert book['author'] == 'Now Has Author'
+
+
+def test_get_recommendation_source(clean_db):
+    """Test getting source book title for a recommendation."""
+    clean_db.add_book(asin='B001', title='The Way of Kings', author='Brandon Sanderson')
+    clean_db.add_recommendation('B001', 'R001')
+
+    source_title = clean_db.get_recommendation_source('R001')
+    assert source_title == 'The Way of Kings'
+
+
+def test_get_recommendation_source_not_found(clean_db):
+    """Test getting source for a non-existent recommendation."""
+    source_title = clean_db.get_recommendation_source('NOTEXIST')
+    assert source_title is None

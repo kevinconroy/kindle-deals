@@ -501,6 +501,77 @@ class Database:
         count = cursor.fetchone()[0]
         return count > 0
 
+    def get_unchecked_recommendation_asins(self) -> List[str]:
+        """
+        Get all recommended ASINs that haven't been checked today.
+
+        Returns ASINs from recommendations table where the source book
+        is an active sample, excluding any already in deal_checks for today.
+
+        Returns:
+            List of recommended ASIN strings
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT r.recommended_asin
+            FROM recommendations r
+            JOIN books b ON r.source_asin = b.asin
+            WHERE b.is_sample = 1 AND b.is_deleted = 0
+            AND r.recommended_asin NOT IN (
+                SELECT asin FROM deal_checks WHERE check_date = CURDATE()
+            )
+        """)
+        results = cursor.fetchall()
+        return [row[0] for row in results]
+
+    def add_recommendation_book(self, asin: str, title: str = None,
+                                author: str = None, cover_url: str = None) -> None:
+        """
+        Add or update a book discovered via recommendations.
+
+        If the book doesn't exist, inserts with is_recommendation=1, is_sample=0.
+        If the book already exists (e.g., as a sample), only updates metadata
+        (title, author, cover_url) without changing is_sample or is_recommendation.
+
+        Args:
+            asin: Amazon Standard Identification Number
+            title: Book title (optional)
+            author: Book author (optional)
+            cover_url: URL to book cover image (optional)
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO books (asin, title, author, cover_url, date_added, is_sample, is_deleted, is_recommendation)
+            VALUES (%s, %s, %s, %s, %s, 0, 0, 1)
+            ON DUPLICATE KEY UPDATE
+                title = COALESCE(%s, title),
+                author = COALESCE(%s, author),
+                cover_url = COALESCE(%s, cover_url)
+        """, (asin, title, author, cover_url, datetime.now(), title, author, cover_url))
+        self.conn.commit()
+
+    def get_recommendation_source(self, asin: str) -> Optional[str]:
+        """
+        Get the source book title for a recommended ASIN.
+
+        Args:
+            asin: The recommended book's ASIN
+
+        Returns:
+            Source book title, or None if not found
+        """
+        cursor = self.conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT b.title
+            FROM recommendations r
+            JOIN books b ON r.source_asin = b.asin
+            WHERE r.recommended_asin = %s
+            AND b.is_sample = 1 AND b.is_deleted = 0
+            LIMIT 1
+        """, (asin,))
+        result = cursor.fetchone()
+        return result['title'] if result else None
+
     def close(self):
         """Close the database connection."""
         if self.conn:
