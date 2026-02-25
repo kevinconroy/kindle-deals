@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import logging
+import queue
 import sys
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
@@ -361,7 +363,148 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
     return deals_found
 
 
-def check_deals(config: Config, db: Database, target_asin: str = None, force: bool = False, dry_run: bool = False, skip_samples: bool = False, skip_daily: bool = False):
+def check_recommendations_phase(scraper, db: Database, check_delay: int,
+                                 concurrency: int = 3, dry_run: bool = False) -> List[Dict[str, Any]]:
+    """
+    Check prices for all recommended books using parallel Playwright tabs.
+
+    Creates a pool of browser pages and uses ThreadPoolExecutor to scrape
+    book info concurrently. DB operations happen in the main thread.
+
+    Args:
+        scraper: AmazonScraper instance (already opened)
+        db: Database instance
+        check_delay: Delay between checks in milliseconds
+        concurrency: Number of parallel browser tabs
+        dry_run: If True, don't update database
+
+    Returns:
+        List of deal dicts for recommended books that qualify
+    """
+    rec_asins = db.get_unchecked_recommendation_asins()
+    if not rec_asins:
+        logger.info("No unchecked recommendation ASINs to process")
+        return []
+
+    logger.info(f"Checking {len(rec_asins)} recommended books with {concurrency} parallel tabs...")
+
+    # Create page pool
+    page_pool = queue.Queue()
+    created_pages = []
+    for _ in range(concurrency):
+        p = scraper.new_page()
+        page_pool.put(p)
+        created_pages.append(p)
+
+    def scrape_worker(asin: str):
+        """Worker that grabs a page from pool, scrapes, returns page."""
+        page = page_pool.get()
+        try:
+            result = scrape_book_info(page, asin)
+            time.sleep(check_delay / 1000)
+            return (asin, result)
+        except Exception as e:
+            logger.error(f"Worker error for {asin}: {e}")
+            return (asin, None)
+        finally:
+            page_pool.put(page)
+
+    deals_found = []
+    checked_count = 0
+    error_count = 0
+
+    try:
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = {executor.submit(scrape_worker, asin): asin for asin in rec_asins}
+
+            for future in as_completed(futures):
+                asin = futures[future]
+                try:
+                    asin, book_info = future.result()
+                except Exception as e:
+                    logger.error(f"Future error for {asin}: {e}")
+                    error_count += 1
+                    if not dry_run:
+                        db.add_deal_check(asin, was_deal=False, notified=False)
+                    continue
+
+                checked_count += 1
+                if checked_count % 50 == 0:
+                    logger.info(f"Progress: {checked_count}/{len(rec_asins)} recommendations checked")
+
+                if not book_info or book_info.get('already_owned'):
+                    if not dry_run:
+                        db.add_deal_check(asin, was_deal=False, notified=False)
+                    continue
+
+                title = book_info.get('title')
+                author = book_info.get('author', '')
+                cover_url = book_info.get('cover_url')
+                current_price = book_info.get('current_price')
+                list_price = book_info.get('list_price')
+
+                if not title or current_price is None or list_price is None:
+                    if not dry_run:
+                        db.add_deal_check(asin, was_deal=False, notified=False)
+                    continue
+
+                # Ensure book exists in DB (for price_history/notifications FK)
+                if not dry_run:
+                    db.add_recommendation_book(asin, title, author, cover_url)
+
+                # Check deal criteria
+                if not is_deal(current_price, list_price):
+                    if not dry_run:
+                        db.add_deal_check(asin, was_deal=False, notified=False)
+                    continue
+
+                # Check notification rules
+                previous_price = db.get_previous_price(asin)
+                if not dry_run:
+                    db.add_price_history(asin, current_price, list_price)
+
+                last_notification = db.get_last_notification(asin)
+                last_notified_price = float(last_notification['notified_price']) if last_notification and last_notification['notified_price'] is not None else None
+
+                if should_notify(current_price, list_price, last_notified_price):
+                    savings_percent = calculate_savings_percent(current_price, list_price)
+                    source_title = db.get_recommendation_source(asin)
+                    match_reason = f"Recommended from: {source_title}" if source_title else "Recommended"
+
+                    deals_found.append({
+                        'asin': asin,
+                        'title': title,
+                        'author': author,
+                        'cover_url': cover_url,
+                        'current_price': current_price,
+                        'list_price': list_price,
+                        'previous_price': previous_price,
+                        'savings_percent': savings_percent,
+                        'match_reason': match_reason
+                    })
+
+                    if not dry_run:
+                        db.add_notification(asin, current_price)
+
+                    logger.info(f"Recommended deal: {title} - ${current_price:.2f} ({match_reason})")
+
+                if not dry_run:
+                    db.add_deal_check(asin, was_deal=True if is_deal(current_price, list_price) else False, notified=bool(deals_found and deals_found[-1]['asin'] == asin))
+
+    finally:
+        for p in created_pages:
+            try:
+                p.close()
+            except Exception:
+                pass
+
+    logger.info(f"Recommendation check complete: {checked_count} checked, {error_count} errors, {len(deals_found)} deals found")
+    return deals_found
+
+
+def check_deals(config: Config, db: Database, target_asin: str = None, force: bool = False,
+                dry_run: bool = False, skip_samples: bool = False, skip_daily: bool = False,
+                skip_recommendations: bool = False):
     """
     Check for deals on tracked books and daily deals page.
 
@@ -373,6 +516,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
         dry_run: If True, don't send emails or update database
         skip_samples: If True, skip checking sample book prices
         skip_daily: If True, skip checking daily deals page
+        skip_recommendations: If True, skip checking recommended book prices
     """
     session_path = os.path.expanduser(config.get('storage.browser_session_path'))
     os.makedirs(os.path.dirname(session_path), exist_ok=True)
@@ -385,7 +529,8 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
     deal_day = get_current_deal_day()
     logger.info(f"Deal day: {deal_day.date()} (deals reset at 3 AM Eastern)")
 
-    deals_found = []
+    tracked_deals = []
+    recommended_deals = []
 
     with AmazonScraper(session_path, headless, page_timeout) as scraper:
         page = scraper.new_page()
@@ -507,7 +652,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                                 'previous_price': previous_price,
                                 'savings_percent': savings_percent
                             }
-                            deals_found.append(deal)
+                            tracked_deals.append(deal)
 
                             # Record notification
                             if not dry_run:
@@ -531,14 +676,22 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
             # Phase 2: Check daily deals
             if not skip_daily and not target_asin:
                 daily_deals = check_daily_deals_phase(page, db, check_delay, dry_run)
-                deals_found.extend(daily_deals)
+                tracked_deals.extend(daily_deals)
+
+            # Phase 3: Check recommended book prices
+            if not skip_recommendations and not target_asin:
+                concurrency = config.get('deals.recommendation_concurrency', 3)
+                recommended_deals = check_recommendations_phase(
+                    scraper, db, check_delay, concurrency, dry_run
+                )
 
         finally:
             page.close()
 
-    # Send email if deals found
-    if deals_found and not dry_run:
-        logger.info(f"Sending email for {len(deals_found)} deals...")
+    # Send email if deals found in either section
+    all_deals = tracked_deals + recommended_deals
+    if all_deals and not dry_run:
+        logger.info(f"Sending email for {len(tracked_deals)} tracked + {len(recommended_deals)} recommended deals...")
 
         notifier = EmailNotifier(
             smtp_server=config.get('email.smtp_server'),
@@ -547,17 +700,19 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
             password=config.get_email_password()
         )
 
-        html = EmailNotifier.generate_email_html(deals_found)
+        html = EmailNotifier.generate_email_html(tracked_deals, recommended_deals=recommended_deals)
         today = datetime.now().strftime('%Y-%m-%d')
-        subject = f"Kindle Deals {today}: {len(deals_found)} book(s) on sale!"
+        subject = f"Kindle Deals {today}: {len(all_deals)} book(s) on sale!"
         to_address = config.get('email.to_address')
 
         notifier.send_email(to_address, subject, html)
         logger.info("Email sent successfully")
-    elif deals_found and dry_run:
-        logger.info(f"DRY RUN: Would send email for {len(deals_found)} deals:")
-        for deal in deals_found:
-            logger.info(f"  - {deal['title']} (${deal['current_price']:.2f})")
+    elif all_deals and dry_run:
+        logger.info(f"DRY RUN: Would send email for {len(tracked_deals)} tracked + {len(recommended_deals)} recommended deals:")
+        for deal in tracked_deals:
+            logger.info(f"  [Tracked] {deal['title']} (${deal['current_price']:.2f})")
+        for deal in recommended_deals:
+            logger.info(f"  [Recommended] {deal['title']} (${deal['current_price']:.2f})")
     else:
         logger.info("No deals found")
 
@@ -636,6 +791,8 @@ def main():
                         help='Skip checking sample book prices')
     parser.add_argument('--skip-daily', action='store_true',
                         help='Skip checking daily deals page')
+    parser.add_argument('--skip-recommendations', action='store_true',
+                        help='Skip checking recommended book prices')
     parser.add_argument('--send-notification', action='store_true',
                         help='Send email for recent deals without checking prices')
     parser.add_argument('--hours', type=int, default=24,
@@ -659,7 +816,9 @@ def main():
         if args.send_notification:
             send_notification_for_recent_deals(config, db, args.hours)
         else:
-            check_deals(config, db, target_asin=args.asin, force=args.force, dry_run=args.dry_run, skip_samples=args.skip_samples, skip_daily=args.skip_daily)
+            check_deals(config, db, target_asin=args.asin, force=args.force,
+                        dry_run=args.dry_run, skip_samples=args.skip_samples,
+                        skip_daily=args.skip_daily, skip_recommendations=args.skip_recommendations)
 
         db.close()
 
