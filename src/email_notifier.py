@@ -23,9 +23,137 @@ class EmailNotifier:
         self.password = password
 
     @staticmethod
-    def generate_email_html(books: List[Dict[str, Any]]) -> str:
+    def _generate_book_html(book: Dict[str, Any]) -> str:
+        """
+        Generate HTML for a single book card.
+
+        Args:
+            book: Book dictionary with keys:
+                - asin: Amazon Standard Identification Number
+                - title: Book title
+                - author: Book author (optional)
+                - cover_url: URL to book cover (optional)
+                - current_price or price: Current price
+                - list_price: Original list price
+                - previous_price: Previous seen price (optional)
+                - match_reason: Why this book was matched (optional)
+
+        Returns:
+            HTML string for one book card
+        """
+        asin = book['asin']
+        title = html_lib.escape(book['title'])
+        author = html_lib.escape(book.get('author') or 'Unknown Author')
+        cover_url = book.get('cover_url', '')
+        current_price = book.get('current_price') or book.get('price', 0)
+        list_price = book.get('list_price', 0)
+        previous_price = book.get('previous_price')
+
+        # Handle free books (price could be 0 or None)
+        if current_price is None:
+            current_price = 0
+
+        # Calculate savings percentage from list price
+        if list_price and list_price > 0:
+            savings_percent = int(((list_price - current_price) / list_price) * 100)
+        else:
+            savings_percent = 0
+
+        # Calculate price drop from previous price
+        price_drop = None
+        price_drop_percent = None
+        if previous_price and previous_price > current_price:
+            price_drop = previous_price - current_price
+            price_drop_percent = int((price_drop / previous_price) * 100)
+
+        # Amazon link
+        amazon_link = f"https://www.amazon.com/dp/{asin}"
+
+        book_html = f"""
+    <div class="book">
+        <div class="book-content">
+"""
+
+        # Add cover image if available
+        if cover_url:
+            book_html += f"""
+            <div class="book-cover">
+                <img src="{cover_url}" alt="{title}">
+            </div>
+"""
+
+        book_html += f"""
+            <div class="book-details">
+                <div class="book-title">{title}</div>
+"""
+
+        # Add author if available
+        if author:
+            book_html += f"""
+                <div class="book-author">by {author}</div>
+"""
+
+        # Add match reason if available (for daily deals)
+        match_reason = book.get('match_reason')
+        if match_reason:
+            book_html += f"""
+                <div class="match-reason">{html_lib.escape(match_reason)}</div>
+"""
+
+        # Format price display
+        if current_price == 0:
+            price_display = "FREE"
+        else:
+            price_display = f"${current_price:.2f}"
+
+        book_html += f"""
+                <div class="price-info">
+                    <div style="margin-bottom: 8px;">
+                        <span class="current-price">{price_display}</span>
+"""
+
+        # Show list price and overall savings
+        if list_price > 0 and list_price != current_price:
+            book_html += f"""
+                        <span class="list-price">List: ${list_price:.2f}</span>
+                        <span class="savings">Save {savings_percent}%</span>
+"""
+
+        book_html += f"""
+                    </div>
+"""
+
+        # Show previous price when available
+        if previous_price is not None and previous_price > 0:
+            book_html += f"""
+                    <div style="font-size: 13px; color: #888; margin-top: 4px;">
+                        <span class="previous-price">Last seen: ${previous_price:.2f}</span>
+"""
+            if price_drop and price_drop > 0:
+                book_html += f"""
+                        <span class="price-drop">↓ ${price_drop:.2f} ({price_drop_percent}%)</span>
+"""
+            book_html += """
+                    </div>
+"""
+
+        book_html += f"""
+                </div>
+                <a href="{amazon_link}" class="buy-button">Buy now on Amazon</a>
+            </div>
+        </div>
+    </div>
+"""
+        return book_html
+
+    @staticmethod
+    def generate_email_html(books: List[Dict[str, Any]], recommended_deals: List[Dict[str, Any]] = None) -> str:
         """
         Generate HTML email content from book data.
+
+        When recommended_deals is None, uses the flat layout (backward compatible).
+        When recommended_deals is provided (even if empty), uses the two-section layout
+        with "Tracked Deals" and "Recommended Deals" sections.
 
         Args:
             books: List of book dictionaries with keys:
@@ -33,18 +161,40 @@ class EmailNotifier:
                 - title: Book title
                 - author: Book author (optional)
                 - cover_url: URL to book cover (optional)
-                - price: Current price
+                - current_price or price: Current price
                 - list_price: Original list price
+            recommended_deals: Optional list of recommended book dictionaries.
+                When provided, enables the two-section layout.
 
         Returns:
             HTML string for email body
         """
-        html = """
+        two_section_mode = recommended_deals is not None
+
+        css_extra = ""
+        if two_section_mode:
+            css_extra = """
+        h2 {
+            color: #232f3e;
+            font-size: 20px;
+            margin-top: 30px;
+            margin-bottom: 10px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .no-deals {
+            color: #888;
+            font-style: italic;
+            padding: 16px 0;
+        }
+"""
+
+        html = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <style>
-        body {
+        body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
             line-height: 1.6;
             color: #333;
@@ -52,67 +202,67 @@ class EmailNotifier:
             margin: 0 auto;
             padding: 20px;
             background-color: #f5f5f5;
-        }
-        h1 {
+        }}
+        h1 {{
             color: #ff9900;
             border-bottom: 2px solid #ff9900;
             padding-bottom: 10px;
             font-size: 24px;
             margin-bottom: 5px;
-        }
-        .book {
+        }}
+        .book {{
             border: 1px solid #e0e0e0;
             border-radius: 8px;
             padding: 20px;
             margin: 16px 0;
             background-color: #ffffff;
-        }
-        .book-content {
+        }}
+        .book-content {{
             display: table;
             width: 100%;
-        }
-        .book-cover {
+        }}
+        .book-cover {{
             display: table-cell;
             vertical-align: top;
             width: 120px;
             padding-right: 20px;
-        }
-        .book-cover img {
+        }}
+        .book-cover img {{
             max-width: 120px;
             border-radius: 4px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-        }
-        .book-details {
+        }}
+        .book-details {{
             display: table-cell;
             vertical-align: top;
-        }
-        .book-title {
+        }}
+        .book-title {{
             font-size: 18px;
             font-weight: bold;
             color: #232f3e;
             margin: 0 0 4px 0;
             line-height: 1.3;
-        }
-        .book-author {
+        }}
+        .book-author {{
             font-size: 14px;
             color: #555;
             margin: 0 0 10px 0;
-        }
-        .price-info {
+        }}
+        .price-info {{
             margin: 10px 0;
-        }
-        .current-price {
+        }}
+        .current-price {{
             font-size: 22px;
             font-weight: bold;
             color: #b12704;
-        }
-        .list-price {
+        }}
+        .list-price {{
             font-size: 14px;
             color: #888;
             text-decoration: line-through;
             margin-left: 8px;
-        }
-        .savings {
+        }}
+        .savings {{
             display: inline-block;
             background-color: #c45500;
             color: white;
@@ -121,12 +271,12 @@ class EmailNotifier:
             font-size: 12px;
             font-weight: bold;
             margin-left: 8px;
-        }
-        .previous-price {
+        }}
+        .previous-price {{
             font-size: 13px;
             color: #888;
-        }
-        .price-drop {
+        }}
+        .price-drop {{
             display: inline-block;
             background-color: #067d62;
             color: white;
@@ -135,8 +285,8 @@ class EmailNotifier:
             font-size: 12px;
             font-weight: bold;
             margin-left: 8px;
-        }
-        .buy-button {
+        }}
+        .buy-button {{
             display: inline-block;
             background-color: #ff9900;
             color: #ffffff;
@@ -147,135 +297,56 @@ class EmailNotifier:
             font-size: 14px;
             margin-top: 12px;
             letter-spacing: 0.3px;
-        }
-        .buy-button:hover {
+        }}
+        .buy-button:hover {{
             background-color: #ec8a00;
-        }
-        .buy-button:active {
+        }}
+        .buy-button:active {{
             color: #ffffff;
-        }
-        .match-reason {
+        }}
+        .match-reason {{
             font-size: 13px;
             color: #067d62;
             margin: 6px 0 10px 0;
             font-weight: 600;
             padding: 4px 0;
-        }
-        .match-reason::before {
-            content: "✓ ";
+        }}
+        .match-reason::before {{
+            content: "\\2713  ";
             font-weight: bold;
-        }
+        }}{css_extra}
     </style>
 </head>
 <body>
     <h1>Kindle Deals Alert</h1>
+"""
+
+        if two_section_mode:
+            # Two-section layout
+            html += """
+    <h2>Tracked Deals</h2>
+"""
+            if books:
+                for book in books:
+                    html += EmailNotifier._generate_book_html(book)
+            else:
+                html += """
+    <p class="no-deals">No tracked deals today</p>
+"""
+
+            if recommended_deals:
+                html += """
+    <h2>Recommended Deals</h2>
+"""
+                for book in recommended_deals:
+                    html += EmailNotifier._generate_book_html(book)
+        else:
+            # Flat layout (backward compatible)
+            html += """
     <p style="color: #555; margin-top: 5px;">The following Kindle books on your watchlist are now on sale:</p>
 """
-
-        for book in books:
-            asin = book['asin']
-            title = html_lib.escape(book['title'])
-            author = html_lib.escape(book.get('author') or 'Unknown Author')
-            cover_url = book.get('cover_url', '')
-            current_price = book.get('current_price') or book.get('price', 0)
-            list_price = book.get('list_price', 0)
-            previous_price = book.get('previous_price')
-
-            # Handle free books (price could be 0 or None)
-            if current_price is None:
-                current_price = 0
-
-            # Calculate savings percentage from list price
-            if list_price and list_price > 0:
-                savings_percent = int(((list_price - current_price) / list_price) * 100)
-            else:
-                savings_percent = 0
-
-            # Calculate price drop from previous price
-            price_drop = None
-            price_drop_percent = None
-            if previous_price and previous_price > current_price:
-                price_drop = previous_price - current_price
-                price_drop_percent = int((price_drop / previous_price) * 100)
-
-            # Amazon link
-            amazon_link = f"https://www.amazon.com/dp/{asin}"
-
-            html += f"""
-    <div class="book">
-        <div class="book-content">
-"""
-
-            # Add cover image if available
-            if cover_url:
-                html += f"""
-            <div class="book-cover">
-                <img src="{cover_url}" alt="{title}">
-            </div>
-"""
-
-            html += f"""
-            <div class="book-details">
-                <div class="book-title">{title}</div>
-"""
-
-            # Add author if available
-            if author:
-                html += f"""
-                <div class="book-author">by {author}</div>
-"""
-
-            # Add match reason if available (for daily deals)
-            match_reason = book.get('match_reason')
-            if match_reason:
-                html += f"""
-                <div class="match-reason">{html_lib.escape(match_reason)}</div>
-"""
-
-            # Format price display
-            if current_price == 0:
-                price_display = "FREE"
-            else:
-                price_display = f"${current_price:.2f}"
-
-            html += f"""
-                <div class="price-info">
-                    <div style="margin-bottom: 8px;">
-                        <span class="current-price">{price_display}</span>
-"""
-
-            # Show list price and overall savings
-            if list_price > 0 and list_price != current_price:
-                html += f"""
-                        <span class="list-price">List: ${list_price:.2f}</span>
-                        <span class="savings">Save {savings_percent}%</span>
-"""
-
-            html += f"""
-                    </div>
-"""
-
-            # Show previous price when available
-            if previous_price is not None and previous_price > 0:
-                html += f"""
-                    <div style="font-size: 13px; color: #888; margin-top: 4px;">
-                        <span class="previous-price">Last seen: ${previous_price:.2f}</span>
-"""
-                if price_drop and price_drop > 0:
-                    html += f"""
-                        <span class="price-drop">↓ ${price_drop:.2f} ({price_drop_percent}%)</span>
-"""
-                html += """
-                    </div>
-"""
-
-            html += f"""
-                </div>
-                <a href="{amazon_link}" class="buy-button">Buy now on Amazon</a>
-            </div>
-        </div>
-    </div>
-"""
+            for book in books:
+                html += EmailNotifier._generate_book_html(book)
 
         html += """
     <hr style="margin-top: 30px; border: none; border-top: 1px solid #e0e0e0;">

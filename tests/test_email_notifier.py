@@ -134,3 +134,98 @@ def test_generate_email_html_shows_previous_price():
     html = EmailNotifier.generate_email_html(books)
     assert 'Last seen' in html
     assert '$2.99' in html
+
+
+def test_generate_email_html_two_sections():
+    """Test email with both tracked and recommended deals."""
+    tracked = [
+        {
+            'asin': 'B001',
+            'title': 'Tracked Book',
+            'author': 'Author One',
+            'cover_url': 'https://example.com/cover1.jpg',
+            'current_price': 2.99,
+            'list_price': 9.99,
+        }
+    ]
+    recommended = [
+        {
+            'asin': 'R001',
+            'title': 'Recommended Book',
+            'author': 'Author Two',
+            'cover_url': 'https://example.com/cover2.jpg',
+            'current_price': 1.99,
+            'list_price': 12.99,
+            'match_reason': 'Recommended from: Tracked Book',
+        }
+    ]
+
+    html = EmailNotifier.generate_email_html(tracked, recommended_deals=recommended)
+
+    assert 'Tracked Deals' in html
+    assert 'Recommended Deals' in html
+    assert 'Tracked Book' in html
+    assert 'Recommended Book' in html
+    assert 'No tracked deals today' not in html
+
+
+def test_generate_email_html_no_tracked_deals():
+    """Test email shows 'No tracked deals today' when tracked section is empty."""
+    recommended = [
+        {
+            'asin': 'R001',
+            'title': 'Recommended Book',
+            'author': 'Author Two',
+            'cover_url': 'https://example.com/cover2.jpg',
+            'current_price': 1.99,
+            'list_price': 12.99,
+            'match_reason': 'Recommended from: Some Book',
+        }
+    ]
+
+    html = EmailNotifier.generate_email_html([], recommended_deals=recommended)
+
+    assert 'No tracked deals today' in html
+    assert 'Recommended Deals' in html
+    assert 'Recommended Book' in html
+
+
+def test_generate_email_html_no_recommended_deals():
+    """Test email omits recommended section when empty."""
+    tracked = [
+        {
+            'asin': 'B001',
+            'title': 'Tracked Book',
+            'author': 'Author One',
+            'cover_url': 'https://example.com/cover1.jpg',
+            'current_price': 2.99,
+            'list_price': 9.99,
+        }
+    ]
+
+    html = EmailNotifier.generate_email_html(tracked, recommended_deals=[])
+
+    assert 'Tracked Deals' in html
+    assert 'Tracked Book' in html
+    assert 'Recommended Deals' not in html
+
+
+def test_generate_email_html_backward_compatible():
+    """Test that calling without recommended_deals works as before (no section headers)."""
+    books = [
+        {
+            'asin': 'B001',
+            'title': 'Test Book',
+            'author': 'Author',
+            'cover_url': 'https://example.com/cover.jpg',
+            'current_price': 2.99,
+            'list_price': 9.99,
+        }
+    ]
+
+    html = EmailNotifier.generate_email_html(books)
+
+    assert 'Test Book' in html
+    # No section headers in backward-compatible mode
+    assert 'Tracked Deals' not in html
+    assert 'Recommended Deals' not in html
