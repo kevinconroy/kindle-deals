@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 import argparse
 import logging
-import queue
+import asyncio
 import sys
 import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
@@ -363,16 +362,185 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
     return deals_found
 
 
-def check_recommendations_phase(scraper, db: Database, check_delay: int,
+async def _async_scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
+    """Async version of scrape_book_info for parallel recommendation checking."""
+    try:
+        url = f"https://www.amazon.com/dp/{asin}"
+        logger.debug(f"Navigating to {url}")
+        await page.goto(url, wait_until='domcontentloaded', timeout=15000)
+        await page.wait_for_timeout(2000)
+
+        # Check for CAPTCHA or login
+        if await page.locator('input[name="email"]').count() > 0:
+            logger.error(f"Hit login page for {asin} - session may have expired")
+            return None
+        if await page.locator('form[action*="captcha"]').count() > 0:
+            logger.error(f"Hit CAPTCHA for {asin} - may need to slow down")
+            return None
+
+        # Check if already owned
+        already_owned = False
+        for selector in [
+            'button:has-text("Read Now")', 'a:has-text("Read Now")',
+            '#kindle-reader-button', 'a[href*="/read/"]',
+            'input[value*="Read Now"]', '#kop-button-ingress'
+        ]:
+            try:
+                if await page.locator(selector).count() > 0:
+                    already_owned = True
+                    break
+            except Exception:
+                continue
+
+        if already_owned:
+            return {'title': None, 'author': None, 'cover_url': None,
+                    'current_price': None, 'list_price': None, 'already_owned': True}
+
+        # Extract title
+        title = None
+        try:
+            title_elem = page.locator('#productTitle').first
+            await title_elem.wait_for(state='visible', timeout=3000)
+            title = (await title_elem.inner_text()).strip()
+        except Exception:
+            pass
+
+        # Extract author
+        author = None
+        for selector in ['.author .contributorNameID', '#bylineInfo .author a.contributorNameID',
+                         'span.author a', '#bylineInfo span.author', '.contributorNameTrigger']:
+            try:
+                elem = page.locator(selector).first
+                if await elem.count() > 0:
+                    author = (await elem.inner_text()).strip()
+                    break
+            except Exception:
+                continue
+
+        # Extract cover
+        cover_url = None
+        for selector in ['#ebooksImgBlkFront', '#imgBlkFront', '#ebooksProductImage',
+                         '#landingImage', 'img.a-dynamic-image', '#main-image']:
+            try:
+                elem = page.locator(selector).first
+                if await elem.count() > 0:
+                    cover_url = await elem.get_attribute('src')
+                    break
+            except Exception:
+                continue
+
+        # Extract price
+        current_price = None
+        try:
+            ku_buy = page.locator('.kindleExtraMessage').first
+            if await ku_buy.count() > 0:
+                ku_text = (await ku_buy.inner_text()).strip()
+                match = re.search(r'\$(\d+\.\d{2})\s+to buy', ku_text)
+                if match:
+                    current_price = float(match.group(1))
+        except Exception:
+            pass
+
+        if current_price is None:
+            for selector in ['.ebook-price-value', 'span.a-price .a-offscreen',
+                             '.kindle-price .a-color-price', '#kindle-price', '#price',
+                             '.a-price .a-offscreen']:
+                try:
+                    elem = page.locator(selector).first
+                    if await elem.count() > 0:
+                        price_text = (await elem.inner_text()).strip()
+                        match = re.search(r'\$?(\d+\.\d{2})', price_text)
+                        if match:
+                            current_price = float(match.group(1))
+                            break
+                except Exception:
+                    continue
+
+        # Extract list price
+        list_price = None
+        try:
+            elem = page.locator('.a-text-price .a-offscreen').first
+            if await elem.count() > 0:
+                price_text = (await elem.inner_text()).strip()
+                match = re.search(r'\$?(\d+\.\d{2})', price_text)
+                if match:
+                    list_price = float(match.group(1))
+        except Exception:
+            pass
+
+        if not list_price and current_price:
+            list_price = current_price
+
+        return {'title': title, 'author': author, 'cover_url': cover_url,
+                'current_price': current_price, 'list_price': list_price}
+
+    except Exception as e:
+        logger.error(f"Failed to scrape {asin}: {e}")
+        return None
+
+
+async def _async_scrape_recommendations(session_path: str, headless: bool,
+                                         page_timeout: int, rec_asins: List[str],
+                                         check_delay: int, concurrency: int) -> List[tuple]:
+    """
+    Scrape recommendation book info using async Playwright with concurrency control.
+
+    Returns list of (asin, book_info_dict_or_None) tuples.
+    """
+    from playwright.async_api import async_playwright
+
+    results = []
+    semaphore = asyncio.Semaphore(concurrency)
+    checked_count = 0
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless)
+        context = await browser.new_context(
+            storage_state=session_path if os.path.exists(session_path) else None
+        )
+        context.set_default_timeout(page_timeout)
+
+        async def scrape_one(asin: str):
+            nonlocal checked_count
+            async with semaphore:
+                page = await context.new_page()
+                try:
+                    result = await _async_scrape_book_info(page, asin)
+                    await asyncio.sleep(check_delay / 1000)
+                    checked_count += 1
+                    if checked_count % 50 == 0:
+                        logger.info(f"Progress: {checked_count}/{len(rec_asins)} recommendations checked")
+                    return (asin, result)
+                except Exception as e:
+                    logger.error(f"Worker error for {asin}: {e}")
+                    return (asin, None)
+                finally:
+                    await page.close()
+
+        tasks = [scrape_one(asin) for asin in rec_asins]
+        results = await asyncio.gather(*tasks)
+
+        # Save session state
+        await context.storage_state(path=session_path)
+        await context.close()
+        await browser.close()
+
+    return results
+
+
+def check_recommendations_phase(session_path: str, headless: bool, page_timeout: int,
+                                 db: Database, check_delay: int,
                                  concurrency: int = 3, dry_run: bool = False) -> List[Dict[str, Any]]:
     """
-    Check prices for all recommended books using parallel Playwright tabs.
+    Check prices for all recommended books using parallel async Playwright tabs.
 
-    Creates a pool of browser pages and uses ThreadPoolExecutor to scrape
-    book info concurrently. DB operations happen in the main thread.
+    Uses async Playwright with asyncio.Semaphore for concurrency control.
+    Scraping happens concurrently; DB operations happen sequentially after.
 
     Args:
-        scraper: AmazonScraper instance (already opened)
+        session_path: Path to browser session state file
+        headless: Run browser in headless mode
+        page_timeout: Page load timeout in milliseconds
         db: Database instance
         check_delay: Delay between checks in milliseconds
         concurrency: Number of parallel browser tabs
@@ -388,117 +556,84 @@ def check_recommendations_phase(scraper, db: Database, check_delay: int,
 
     logger.info(f"Checking {len(rec_asins)} recommended books with {concurrency} parallel tabs...")
 
-    # Create page pool
-    page_pool = queue.Queue()
-    created_pages = []
-    for _ in range(concurrency):
-        p = scraper.new_page()
-        page_pool.put(p)
-        created_pages.append(p)
+    # Run async scraping
+    scrape_results = asyncio.run(_async_scrape_recommendations(
+        session_path, headless, page_timeout, rec_asins, check_delay, concurrency
+    ))
 
-    def scrape_worker(asin: str):
-        """Worker that grabs a page from pool, scrapes, returns page."""
-        page = page_pool.get()
-        try:
-            result = scrape_book_info(page, asin)
-            time.sleep(check_delay / 1000)
-            return (asin, result)
-        except Exception as e:
-            logger.error(f"Worker error for {asin}: {e}")
-            return (asin, None)
-        finally:
-            page_pool.put(page)
-
+    # Process results with DB operations (synchronous)
     deals_found = []
-    checked_count = 0
     error_count = 0
 
-    try:
-        with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            futures = {executor.submit(scrape_worker, asin): asin for asin in rec_asins}
+    for asin, book_info in scrape_results:
+        if book_info is None:
+            error_count += 1
+            if not dry_run:
+                db.add_deal_check(asin, was_deal=False, notified=False)
+            continue
 
-            for future in as_completed(futures):
-                asin = futures[future]
-                try:
-                    asin, book_info = future.result()
-                except Exception as e:
-                    logger.error(f"Future error for {asin}: {e}")
-                    error_count += 1
-                    if not dry_run:
-                        db.add_deal_check(asin, was_deal=False, notified=False)
-                    continue
+        if book_info.get('already_owned'):
+            if not dry_run:
+                db.add_deal_check(asin, was_deal=False, notified=False)
+            continue
 
-                checked_count += 1
-                if checked_count % 50 == 0:
-                    logger.info(f"Progress: {checked_count}/{len(rec_asins)} recommendations checked")
+        title = book_info.get('title')
+        author = book_info.get('author', '')
+        cover_url = book_info.get('cover_url')
+        current_price = book_info.get('current_price')
+        list_price = book_info.get('list_price')
 
-                if not book_info or book_info.get('already_owned'):
-                    if not dry_run:
-                        db.add_deal_check(asin, was_deal=False, notified=False)
-                    continue
+        if not title or current_price is None or list_price is None:
+            if not dry_run:
+                db.add_deal_check(asin, was_deal=False, notified=False)
+            continue
 
-                title = book_info.get('title')
-                author = book_info.get('author', '')
-                cover_url = book_info.get('cover_url')
-                current_price = book_info.get('current_price')
-                list_price = book_info.get('list_price')
+        # Ensure book exists in DB (for price_history/notifications FK)
+        if not dry_run:
+            db.add_recommendation_book(asin, title, author, cover_url)
 
-                if not title or current_price is None or list_price is None:
-                    if not dry_run:
-                        db.add_deal_check(asin, was_deal=False, notified=False)
-                    continue
+        # Check deal criteria
+        if not is_deal(current_price, list_price):
+            if not dry_run:
+                db.add_deal_check(asin, was_deal=False, notified=False)
+            continue
 
-                # Ensure book exists in DB (for price_history/notifications FK)
-                if not dry_run:
-                    db.add_recommendation_book(asin, title, author, cover_url)
+        # Check notification rules
+        previous_price = db.get_previous_price(asin)
+        if not dry_run:
+            db.add_price_history(asin, current_price, list_price)
 
-                # Check deal criteria
-                if not is_deal(current_price, list_price):
-                    if not dry_run:
-                        db.add_deal_check(asin, was_deal=False, notified=False)
-                    continue
+        last_notification = db.get_last_notification(asin)
+        last_notified_price = float(last_notification['notified_price']) if last_notification and last_notification['notified_price'] is not None else None
 
-                # Check notification rules
-                previous_price = db.get_previous_price(asin)
-                if not dry_run:
-                    db.add_price_history(asin, current_price, list_price)
+        if should_notify(current_price, list_price, last_notified_price):
+            savings_percent = calculate_savings_percent(current_price, list_price)
+            source_title = db.get_recommendation_source(asin)
+            match_reason = f"Recommended from: {source_title}" if source_title else "Recommended"
 
-                last_notification = db.get_last_notification(asin)
-                last_notified_price = float(last_notification['notified_price']) if last_notification and last_notification['notified_price'] is not None else None
+            deals_found.append({
+                'asin': asin,
+                'title': title,
+                'author': author,
+                'cover_url': cover_url,
+                'current_price': current_price,
+                'list_price': list_price,
+                'previous_price': previous_price,
+                'savings_percent': savings_percent,
+                'match_reason': match_reason
+            })
 
-                if should_notify(current_price, list_price, last_notified_price):
-                    savings_percent = calculate_savings_percent(current_price, list_price)
-                    source_title = db.get_recommendation_source(asin)
-                    match_reason = f"Recommended from: {source_title}" if source_title else "Recommended"
+            if not dry_run:
+                db.add_notification(asin, current_price)
 
-                    deals_found.append({
-                        'asin': asin,
-                        'title': title,
-                        'author': author,
-                        'cover_url': cover_url,
-                        'current_price': current_price,
-                        'list_price': list_price,
-                        'previous_price': previous_price,
-                        'savings_percent': savings_percent,
-                        'match_reason': match_reason
-                    })
+            logger.info(f"Recommended deal: {title} - ${current_price:.2f} ({match_reason})")
 
-                    if not dry_run:
-                        db.add_notification(asin, current_price)
+        if not dry_run:
+            was_deal = is_deal(current_price, list_price)
+            notified = bool(deals_found and deals_found[-1]['asin'] == asin)
+            db.add_deal_check(asin, was_deal=was_deal, notified=notified)
 
-                    logger.info(f"Recommended deal: {title} - ${current_price:.2f} ({match_reason})")
-
-                if not dry_run:
-                    db.add_deal_check(asin, was_deal=True if is_deal(current_price, list_price) else False, notified=bool(deals_found and deals_found[-1]['asin'] == asin))
-
-    finally:
-        for p in created_pages:
-            try:
-                p.close()
-            except Exception:
-                pass
-
-    logger.info(f"Recommendation check complete: {checked_count} checked, {error_count} errors, {len(deals_found)} deals found")
+    logger.info(f"Recommendation check complete: {len(scrape_results)} checked, {error_count} errors, {len(deals_found)} deals found")
     return deals_found
 
 
@@ -678,15 +813,15 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                 daily_deals = check_daily_deals_phase(page, db, check_delay, dry_run)
                 tracked_deals.extend(daily_deals)
 
-            # Phase 3: Check recommended book prices
-            if not skip_recommendations and not target_asin:
-                concurrency = config.get('deals.recommendation_concurrency', 3)
-                recommended_deals = check_recommendations_phase(
-                    scraper, db, check_delay, concurrency, dry_run
-                )
-
         finally:
             page.close()
+
+    # Phase 3: Check recommended book prices (uses its own async Playwright instance)
+    if not skip_recommendations and not target_asin:
+        concurrency = config.get('deals.recommendation_concurrency', 3)
+        recommended_deals = check_recommendations_phase(
+            session_path, headless, page_timeout, db, check_delay, concurrency, dry_run
+        )
 
     # Send email if deals found in either section
     all_deals = tracked_deals + recommended_deals
