@@ -11,8 +11,10 @@ import logging
 import os
 import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import List
+from urllib.parse import quote
 
 from config import Config
 from database import Database
@@ -25,19 +27,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def scrape_recommendations(page, asin: str) -> List[str]:
+def scrape_recommendations(page, asin: str, domain: str = 'amazon.com') -> List[str]:
     """
     Scrape 'Customers who bought this also bought' ASINs from product page.
 
     Args:
         page: Playwright page object
         asin: Book ASIN to scrape recommendations for
+        domain: Amazon domain to use (e.g. 'amazon.com', 'amazon.co.uk')
 
     Returns:
         List of recommended ASINs
     """
     try:
-        url = f"https://www.amazon.com/dp/{asin}"
+        url = f"https://www.{domain}/dp/{asin}"
         logger.debug(f"Scraping recommendations from {url}")
         page.goto(url, wait_until='domcontentloaded', timeout=15000)
         page.wait_for_timeout(2000)
@@ -188,6 +191,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
         headless = config.get('scraping.headless', True)
 
     page_timeout = config.get('scraping.page_timeout', 30) * 1000
+    amazon_domain = config.get('amazon.domain', 'amazon.com')
 
     with AmazonScraper(session_path, headless, page_timeout) as scraper:
         page = scraper.new_page()
@@ -195,7 +199,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
         try:
             # Navigate directly to library page — if session is valid, we'll get books
             logger.info("Navigating to Amazon All Books...")
-            page.goto("https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber=1")
+            page.goto(f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber=1")
             page.wait_for_load_state('domcontentloaded')
             page.wait_for_timeout(2000)
 
@@ -216,7 +220,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                     input()
 
                     logger.info("Login complete, navigating to library...")
-                    page.goto("https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber=1")
+                    page.goto(f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber=1")
                     page.wait_for_load_state('domcontentloaded')
                     page.wait_for_timeout(2000)
                     book_divs_count = page.locator('input[type="checkbox"][id*=":Kindle"]').count()
@@ -276,7 +280,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
 
                 # Navigate to specific page
                 if page_num > 1:
-                    page.goto(f"https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber={page_num}")
+                    page.goto(f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber={page_num}")
                     page.wait_for_load_state('networkidle')
 
                 # Find all item checkboxes — their id format is "{ASIN}:KindleEBook" or "{ASIN}:KindleEBookSample"
@@ -363,40 +367,95 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                     logger.info(f"DRY RUN: Would add {total_collections_added} samples to collection")
                 return
 
-            # Add/update books in database
+            # Add/update books in database.
+            # Dual-state detection: an ASIN can appear twice on the library page —
+            # once as KindleEBook (owned) and once as KindleEBookSample (sample).
+            # We detect this two ways:
+            #   1. Same ASIN appears twice in all_items (both states visible in this scan)
+            #   2. The state we see now contradicts what's already in the DB
+            #      (e.g. DB has is_sample=0 but library shows it as a sample, or vice versa)
+            # In either case we keep is_sample=1 and set has_owned_copy=1.
             logger.info(f"Processing {len(all_items)} books...")
             added_count = 0
             skipped_count = 0
-            updated_count = 0
+            dual_state_count = 0
             synced_asins = set()
 
+            # First pass: collect which ASINs appear as both sample and owned in this scan
+            asin_kinds: dict = defaultdict(set)
+            for item in all_items:
+                asin_kinds[item['asin']].add('sample' if item['is_sample'] else 'owned')
+            dual_in_scan = {
+                asin for asin, kinds in asin_kinds.items()
+                if 'sample' in kinds and 'owned' in kinds
+            }
+
+            seen_asins: set = set()
             for item in all_items:
                 try:
                     asin = item['asin']
-                    is_sample = item['is_sample']
+                    if asin in seen_asins:
+                        # Second occurrence of same ASIN — dual state confirmed in this scan.
+                        # has_owned_copy will already be set on the first pass below.
+                        continue
+                    seen_asins.add(asin)
                     synced_asins.add(asin)
 
+                    is_sample_now = item['is_sample']
                     existing = db.get_book(asin)
-                    if existing:
-                        # Only upgrade sample → owned, never revert owned → sample
-                        # (a user can have both a sample and owned copy of the same ASIN)
-                        current_is_sample = existing['is_sample'] == 1
-                        if current_is_sample and not is_sample:
-                            logger.info(f"ASIN {asin} upgraded: sample -> owned")
+
+                    # Determine if this is a dual-state book:
+                    # - Appears as both sample and owned in the current scan, OR
+                    # - DB says sample but library shows it as owned (or vice versa)
+                    is_dual = asin in dual_in_scan
+                    if existing and not is_dual:
+                        db_is_sample = existing['is_sample'] == 1
+                        if db_is_sample != is_sample_now:
+                            # Contradicting states between DB and library → dual state
+                            is_dual = True
+
+                    if is_dual:
+                        if not existing:
                             if not dry_run:
-                                db.update_book_sample_status(asin, False)
-                            updated_count += 1
+                                db.add_book(asin=asin, is_sample=True)
+                            added_count += 1
                         else:
-                            skipped_count += 1
+                            # Ensure is_sample=1 (may have been "upgraded" by old sync logic)
+                            if existing['is_sample'] == 0 and not dry_run:
+                                db.update_book_sample_status(asin, True)
+                        if not dry_run:
+                            db.set_has_owned_copy(asin, True)
+                        logger.info(f"Dual state: {asin} is both sample and owned — marked for cleanup")
+                        dual_state_count += 1
+                    elif existing:
+                        skipped_count += 1
                     else:
                         if not dry_run:
-                            db.add_book(asin=asin, is_sample=is_sample)
+                            db.add_book(asin=asin, is_sample=is_sample_now)
                         added_count += 1
 
                 except Exception as e:
                     logger.error(f"Failed to process ASIN {item['asin']}: {e}")
 
-            logger.info(f"Added {added_count} new, {updated_count} updated, {skipped_count} unchanged")
+            logger.info(f"Added {added_count} new, {dual_state_count} dual-state flagged, {skipped_count} unchanged")
+
+            # Report books eligible for sample cleanup
+            if not dry_run:
+                cleanup_books = db.get_samples_with_owned_copies()
+                if cleanup_books:
+                    logger.info(f"\n{'='*60}")
+                    logger.info(f"SAMPLE CLEANUP: {len(cleanup_books)} book(s) have both a sample and owned copy.")
+                    logger.info("You can delete the redundant sample using these URLs:")
+                    for book in cleanup_books:
+                        title = book.get('title')
+                        if title:
+                            encoded_title = quote(title, safe=':')
+                            url = f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc/{encoded_title}"
+                        else:
+                            url = f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc"
+                        display = title or book['asin']
+                        logger.info(f"  {display}: {url}")
+                    logger.info(f"{'='*60}\n")
 
             if total_collections_added > 0:
                 logger.info(f"Collections: added {total_collections_added} samples to collection")
@@ -431,7 +490,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                     continue
 
                 # Scrape recommendations
-                recs = scrape_recommendations(page, asin)
+                recs = scrape_recommendations(page, asin, domain=amazon_domain)
 
                 # Store in database
                 for rec_asin in recs:

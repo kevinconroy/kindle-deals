@@ -28,26 +28,22 @@ def get_current_deal_day() -> datetime:
     """
     Get the current "deal day" considering 3 AM Eastern reset time.
 
-    Deals reset at 3 AM Eastern, so before 3 AM counts as previous day.
+    Deals reset at 3 AM Eastern. Uses zoneinfo for correct DST handling
+    (EST is UTC-5, EDT is UTC-4; zoneinfo handles this automatically).
     Returns midnight of the current deal day.
     """
-    from datetime import timezone
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        from backports.zoneinfo import ZoneInfo  # Python 3.8 fallback
 
-    # Get current UTC time
-    now_utc = datetime.now(timezone.utc)
+    now_eastern = datetime.now(ZoneInfo('America/New_York'))
 
-    # Convert to Eastern Time (UTC-5, or UTC-4 during DST)
-    # Simple approximation: use UTC-5 (we can adjust if needed)
-    eastern_offset = timedelta(hours=-5)
-    now_eastern = now_utc + eastern_offset
-
-    # If before 3 AM, use previous day
     if now_eastern.hour < 3:
         deal_day = now_eastern.date() - timedelta(days=1)
     else:
         deal_day = now_eastern.date()
 
-    # Return as datetime at midnight
     return datetime.combine(deal_day, datetime.min.time())
 
 
@@ -60,11 +56,11 @@ def calculate_savings_percent(current_price: float, list_price: float) -> int:
     return int(round(savings))
 
 
-def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
+def scrape_book_info(page, asin: str, domain: str = 'amazon.com') -> Optional[Dict[str, Any]]:
     """Scrape book information from Amazon product page"""
     try:
         # Navigate to product page
-        url = f"https://www.amazon.com/dp/{asin}"
+        url = f"https://www.{domain}/dp/{asin}"
         logger.debug(f"Navigating to {url}")
         page.goto(url, wait_until='domcontentloaded', timeout=15000)
 
@@ -250,9 +246,9 @@ def scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def scrape_daily_deals(page) -> List[str]:
+def scrape_daily_deals(page, domain: str = 'amazon.com') -> List[str]:
     """Scrape ASINs from Amazon's daily Kindle deals page."""
-    deals_url = "https://www.amazon.com/amz-books/book-deals?filters=v1%3AFORMAT%5Bkindle_edition%5D"
+    deals_url = f"https://www.{domain}/amz-books/book-deals?filters=v1%3AFORMAT%5Bkindle_edition%5D"
 
     logger.info("Navigating to daily deals page...")
     page.goto(deals_url, wait_until='domcontentloaded', timeout=30000)
@@ -276,7 +272,8 @@ def scrape_daily_deals(page) -> List[str]:
     return unique_asins
 
 
-def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool = False) -> List[Dict[str, Any]]:
+def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool = False,
+                            domain: str = 'amazon.com') -> List[Dict[str, Any]]:
     """
     Check today's daily deals for matches against user's interests.
 
@@ -288,7 +285,7 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
                 f"{len(matcher.recommended_asins)} recommendations")
 
     deals_found = []
-    deal_asins = scrape_daily_deals(page)
+    deal_asins = scrape_daily_deals(page, domain=domain)
     logger.info(f"Checking {len(deal_asins)} daily deals for matches...")
 
     for asin in deal_asins:
@@ -298,7 +295,7 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
             continue
 
         # Scrape book info using the full scraper
-        book_info = scrape_book_info(page, asin)
+        book_info = scrape_book_info(page, asin, domain=domain)
 
         if not book_info or book_info.get('already_owned'):
             if not dry_run:
@@ -377,10 +374,10 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
     return deals_found
 
 
-async def _async_scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
+async def _async_scrape_book_info(page, asin: str, domain: str = 'amazon.com') -> Optional[Dict[str, Any]]:
     """Async version of scrape_book_info for parallel recommendation checking."""
     try:
-        url = f"https://www.amazon.com/dp/{asin}"
+        url = f"https://www.{domain}/dp/{asin}"
         logger.debug(f"Navigating to {url}")
         await page.goto(url, wait_until='domcontentloaded', timeout=15000)
         await page.wait_for_timeout(2000)
@@ -496,7 +493,8 @@ async def _async_scrape_book_info(page, asin: str) -> Optional[Dict[str, Any]]:
 
 async def _async_scrape_recommendations(session_path: str, headless: bool,
                                          page_timeout: int, rec_asins: List[str],
-                                         check_delay: int, concurrency: int) -> List[tuple]:
+                                         check_delay: int, concurrency: int,
+                                         domain: str = 'amazon.com') -> List[tuple]:
     """
     Scrape recommendation book info using async Playwright with concurrency control.
 
@@ -526,7 +524,7 @@ async def _async_scrape_recommendations(session_path: str, headless: bool,
             page = await page_pool.get()
             try:
                 logger.debug(f"Scraping recommendation: {asin}")
-                result = await _async_scrape_book_info(page, asin)
+                result = await _async_scrape_book_info(page, asin, domain=domain)
                 await asyncio.sleep(check_delay / 1000)
                 checked_count += 1
                 if checked_count % 10 == 0:
@@ -555,7 +553,8 @@ async def _async_scrape_recommendations(session_path: str, headless: bool,
 
 def check_recommendations_phase(session_path: str, headless: bool, page_timeout: int,
                                  db: Database, check_delay: int,
-                                 concurrency: int = 3, dry_run: bool = False) -> List[Dict[str, Any]]:
+                                 concurrency: int = 3, dry_run: bool = False,
+                                 domain: str = 'amazon.com') -> List[Dict[str, Any]]:
     """
     Check prices for all recommended books using parallel async Playwright tabs.
 
@@ -583,7 +582,8 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
 
     # Run async scraping
     scrape_results = asyncio.run(_async_scrape_recommendations(
-        session_path, headless, page_timeout, rec_asins, check_delay, concurrency
+        session_path, headless, page_timeout, rec_asins, check_delay, concurrency,
+        domain=domain
     ))
 
     # Process results with DB operations (synchronous)
@@ -685,6 +685,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
     headless = config.get('scraping.headless', True)
     page_timeout = config.get('scraping.page_timeout', 30) * 1000
     check_delay = config.get('scraping.check_delay', 2000)
+    amazon_domain = config.get('amazon.domain', 'amazon.com')
 
     # Get current deal day (considers 3 AM Eastern reset)
     deal_day = get_current_deal_day()
@@ -743,12 +744,12 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                 for book in books:
                     asin = book['asin']
                     title = book['title'] or asin
-                    url = f"https://www.amazon.com/dp/{asin}"
+                    url = f"https://www.{amazon_domain}/dp/{asin}"
                     logger.info(f"Checking {title}... ({url})")
 
                     try:
                         # Scrape book information
-                        book_info = scrape_book_info(page, asin)
+                        book_info = scrape_book_info(page, asin, domain=amazon_domain)
 
                         if not book_info:
                             logger.warning(f"Could not scrape info for {asin}")
@@ -836,7 +837,8 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
 
             # Phase 2: Check daily deals
             if not skip_daily and not target_asin:
-                daily_deals = check_daily_deals_phase(page, db, check_delay, dry_run)
+                daily_deals = check_daily_deals_phase(page, db, check_delay, dry_run,
+                                                      domain=amazon_domain)
                 tracked_deals.extend(daily_deals)
 
         finally:
@@ -846,7 +848,8 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
     if not skip_recommendations and not target_asin:
         concurrency = config.get('deals.recommendation_concurrency', 3)
         recommended_deals = check_recommendations_phase(
-            session_path, headless, page_timeout, db, check_delay, concurrency, dry_run
+            session_path, headless, page_timeout, db, check_delay, concurrency, dry_run,
+            domain=amazon_domain
         )
 
     # Send email if deals found in either section
@@ -887,9 +890,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
             title = book.get('title')
             if title:
                 encoded_title = quote(title, safe=':')
-                url = f"https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc/{encoded_title}"
+                url = f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc/{encoded_title}"
             else:
-                url = "https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc"
+                url = f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc"
             display = title or book['asin']
             logger.info(f"  {display}: {url}")
         logger.info(f"{'='*60}\n")
