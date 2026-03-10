@@ -65,9 +65,6 @@ def scrape_book_info(page, asin: str, domain: str = 'amazon.com',
         logger.debug(f"Navigating to {url}")
         page.goto(url, wait_until='domcontentloaded', timeout=15000)
 
-        # Wait a bit for dynamic content, but don't wait for networkidle (can hang)
-        page.wait_for_timeout(2000)
-
         # Check if we hit a CAPTCHA or login page
         if page.locator('input[name="email"]').count() > 0:
             logger.error(f"Hit login page for {asin} - session may have expired")
@@ -400,7 +397,6 @@ async def _async_scrape_book_info(page, asin: str, domain: str = 'amazon.com') -
         url = f"https://www.{domain}/dp/{asin}"
         logger.debug(f"Navigating to {url}")
         await page.goto(url, wait_until='domcontentloaded', timeout=15000)
-        await page.wait_for_timeout(2000)
 
         # Check for CAPTCHA or login
         if await page.locator('input[name="email"]').count() > 0:
@@ -628,6 +624,8 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
     deals_found = []
     error_count = 0
 
+    # Reconnect after potentially long async scraping session
+    db.ping_reconnect()
     for asin, book_info in scrape_results:
         if book_info is None:
             error_count += 1
@@ -732,6 +730,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
     tracked_deals = []
     recommended_deals = []
 
+    db.ping_reconnect()
     with AmazonScraper(session_path, headless, page_timeout) as scraper:
         page = scraper.new_page()
 
