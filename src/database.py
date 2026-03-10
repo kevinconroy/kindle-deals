@@ -54,115 +54,130 @@ class Database:
     def _create_tables(self):
         """Create all required tables if they don't exist."""
         cursor = self.conn.cursor()
-
-        # Books table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS books (
-                asin VARCHAR(20) PRIMARY KEY,
-                title VARCHAR(500),
-                author VARCHAR(255),
-                cover_url VARCHAR(1000),
-                date_added DATETIME NOT NULL,
-                is_sample TINYINT(1) DEFAULT 1,
-                is_deleted TINYINT(1) DEFAULT 0,
-                is_recommendation TINYINT(1) DEFAULT 0
-            )
-        """)
-
-        # Migrate existing table to allow NULL title (for existing databases)
         try:
+            # Books table
             cursor.execute("""
-                ALTER TABLE books MODIFY title VARCHAR(500) NULL
+                CREATE TABLE IF NOT EXISTS books (
+                    asin VARCHAR(20) PRIMARY KEY,
+                    title VARCHAR(500),
+                    author VARCHAR(255),
+                    cover_url VARCHAR(1000),
+                    date_added DATETIME NOT NULL,
+                    is_sample TINYINT(1) DEFAULT 1,
+                    is_deleted TINYINT(1) DEFAULT 0,
+                    is_recommendation TINYINT(1) DEFAULT 0,
+                    has_owned_copy TINYINT(1) DEFAULT 0
+                )
             """)
-        except Exception:
-            # Ignore if already nullable or other issues
-            pass
 
-        # Migrate is_active -> is_sample + is_deleted (for existing databases)
-        try:
+            # Migrate existing table to allow NULL title (for existing databases)
+            try:
+                cursor.execute("""
+                    ALTER TABLE books MODIFY title VARCHAR(500) NULL
+                """)
+            except Exception:
+                # Ignore if already nullable or other issues
+                pass
+
+            # Migrate is_active -> is_sample + is_deleted (for existing databases)
+            try:
+                cursor.execute("""
+                    SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'books' AND COLUMN_NAME = 'is_active'
+                """, (self.database,))
+                if cursor.fetchone():
+                    # Old schema detected: add new columns and migrate data
+                    try:
+                        cursor.execute("ALTER TABLE books ADD COLUMN is_sample TINYINT(1) DEFAULT 1")
+                    except Exception:
+                        pass  # Column may already exist
+                    try:
+                        cursor.execute("ALTER TABLE books ADD COLUMN is_deleted TINYINT(1) DEFAULT 0")
+                    except Exception:
+                        pass  # Column may already exist
+                    # Migrate: is_active=1 -> is_sample=1, is_deleted=0
+                    #          is_active=0 -> is_sample=1, is_deleted=1
+                    cursor.execute("UPDATE books SET is_sample = 1, is_deleted = CASE WHEN is_active = 0 THEN 1 ELSE 0 END")
+                    cursor.execute("ALTER TABLE books DROP COLUMN is_active")
+                    self.conn.commit()
+            except Exception:
+                pass
+
+            # Migrate: add is_recommendation column (for existing databases)
+            try:
+                cursor.execute("""
+                    SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'books' AND COLUMN_NAME = 'is_recommendation'
+                """, (self.database,))
+                if not cursor.fetchone():
+                    cursor.execute("ALTER TABLE books ADD COLUMN is_recommendation TINYINT(1) DEFAULT 0")
+                    self.conn.commit()
+            except Exception:
+                pass
+
+            # Migrate: add has_owned_copy column (for existing databases)
+            try:
+                cursor.execute("""
+                    SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'books' AND COLUMN_NAME = 'has_owned_copy'
+                """, (self.database,))
+                if not cursor.fetchone():
+                    cursor.execute("ALTER TABLE books ADD COLUMN has_owned_copy TINYINT(1) DEFAULT 0")
+                    self.conn.commit()
+            except Exception:
+                pass
+
+            # Price history table
             cursor.execute("""
-                SELECT COLUMN_NAME FROM information_schema.COLUMNS
-                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'books' AND COLUMN_NAME = 'is_active'
-            """, (self.database,))
-            if cursor.fetchone():
-                # Old schema detected: add new columns and migrate data
-                try:
-                    cursor.execute("ALTER TABLE books ADD COLUMN is_sample TINYINT(1) DEFAULT 1")
-                except Exception:
-                    pass  # Column may already exist
-                try:
-                    cursor.execute("ALTER TABLE books ADD COLUMN is_deleted TINYINT(1) DEFAULT 0")
-                except Exception:
-                    pass  # Column may already exist
-                # Migrate: is_active=1 -> is_sample=1, is_deleted=0
-                #          is_active=0 -> is_sample=1, is_deleted=1
-                cursor.execute("UPDATE books SET is_sample = 1, is_deleted = CASE WHEN is_active = 0 THEN 1 ELSE 0 END")
-                cursor.execute("ALTER TABLE books DROP COLUMN is_active")
-                self.conn.commit()
-        except Exception:
-            pass
+                CREATE TABLE IF NOT EXISTS price_history (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    asin VARCHAR(20) NOT NULL,
+                    price DECIMAL(10,2),
+                    list_price DECIMAL(10,2),
+                    check_date DATETIME NOT NULL,
+                    FOREIGN KEY (asin) REFERENCES books(asin)
+                )
+            """)
 
-        # Migrate: add is_recommendation column (for existing databases)
-        try:
+            # Notifications table
             cursor.execute("""
-                SELECT COLUMN_NAME FROM information_schema.COLUMNS
-                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'books' AND COLUMN_NAME = 'is_recommendation'
-            """, (self.database,))
-            if not cursor.fetchone():
-                cursor.execute("ALTER TABLE books ADD COLUMN is_recommendation TINYINT(1) DEFAULT 0")
-                self.conn.commit()
-        except Exception:
-            pass
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    asin VARCHAR(20) NOT NULL,
+                    notified_price DECIMAL(10,2) NOT NULL,
+                    notified_date DATETIME NOT NULL,
+                    FOREIGN KEY (asin) REFERENCES books(asin)
+                )
+            """)
 
-        # Price history table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS price_history (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                asin VARCHAR(20) NOT NULL,
-                price DECIMAL(10,2),
-                list_price DECIMAL(10,2),
-                check_date DATETIME NOT NULL,
-                FOREIGN KEY (asin) REFERENCES books(asin)
-            )
-        """)
+            # Recommendations table - stores "also bought" data
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS recommendations (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    source_asin VARCHAR(20) NOT NULL,
+                    recommended_asin VARCHAR(20) NOT NULL,
+                    created_date DATETIME NOT NULL,
+                    FOREIGN KEY (source_asin) REFERENCES books(asin),
+                    INDEX idx_recommended_asin (recommended_asin),
+                    UNIQUE KEY unique_recommendation (source_asin, recommended_asin)
+                )
+            """)
 
-        # Notifications table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS notifications (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                asin VARCHAR(20) NOT NULL,
-                notified_price DECIMAL(10,2) NOT NULL,
-                notified_date DATETIME NOT NULL,
-                FOREIGN KEY (asin) REFERENCES books(asin)
-            )
-        """)
+            # Deal checks table - tracks processed daily deals
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS deal_checks (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    asin VARCHAR(20) NOT NULL,
+                    check_date DATE NOT NULL,
+                    was_deal TINYINT(1) NOT NULL,
+                    notified TINYINT(1) NOT NULL,
+                    UNIQUE KEY unique_daily_check (asin, check_date)
+                )
+            """)
 
-        # Recommendations table - stores "also bought" data
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS recommendations (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                source_asin VARCHAR(20) NOT NULL,
-                recommended_asin VARCHAR(20) NOT NULL,
-                created_date DATETIME NOT NULL,
-                FOREIGN KEY (source_asin) REFERENCES books(asin),
-                INDEX idx_recommended_asin (recommended_asin),
-                UNIQUE KEY unique_recommendation (source_asin, recommended_asin)
-            )
-        """)
-
-        # Deal checks table - tracks processed daily deals
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS deal_checks (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                asin VARCHAR(20) NOT NULL,
-                check_date DATE NOT NULL,
-                was_deal TINYINT(1) NOT NULL,
-                notified TINYINT(1) NOT NULL,
-                UNIQUE KEY unique_daily_check (asin, check_date)
-            )
-        """)
-
-        self.conn.commit()
+            self.conn.commit()
+        finally:
+            cursor.close()
 
     def add_book(self, asin: str, title: str = None, author: str = None,
                  cover_url: str = None, is_sample: bool = True) -> bool:
@@ -180,16 +195,19 @@ class Database:
             True if book was newly added, False if already existed
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT IGNORE INTO books (asin, title, author, cover_url, date_added, is_sample, is_deleted)
-            VALUES (%s, %s, %s, %s, %s, %s, 0)
-        """, (asin, title, author, cover_url, datetime.now(), 1 if is_sample else 0))
-        self.conn.commit()
+        try:
+            cursor.execute("""
+                INSERT IGNORE INTO books (asin, title, author, cover_url, date_added, is_sample, is_deleted)
+                VALUES (%s, %s, %s, %s, %s, %s, 0)
+            """, (asin, title, author, cover_url, datetime.now(), 1 if is_sample else 0))
+            self.conn.commit()
 
-        # Log how many rows were affected (0 if already exists due to INSERT IGNORE)
-        if cursor.rowcount == 0:
-            return False  # Already existed
-        return True  # Newly added
+            # Log how many rows were affected (0 if already exists due to INSERT IGNORE)
+            if cursor.rowcount == 0:
+                return False  # Already existed
+            return True  # Newly added
+        finally:
+            cursor.close()
 
     def get_book(self, asin: str) -> Optional[Dict[str, Any]]:
         """
@@ -202,9 +220,12 @@ class Database:
             Dictionary with book data or None if not found
         """
         cursor = self.conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM books WHERE asin = %s", (asin,))
-        result = cursor.fetchone()
-        return result
+        try:
+            cursor.execute("SELECT * FROM books WHERE asin = %s", (asin,))
+            result = cursor.fetchone()
+            return result
+        finally:
+            cursor.close()
 
     def update_book_metadata(self, asin: str, title: str, author: str = None,
                             cover_url: str = None) -> None:
@@ -218,12 +239,15 @@ class Database:
             cover_url: URL to book cover image (optional)
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            UPDATE books
-            SET title = %s, author = %s, cover_url = %s
-            WHERE asin = %s
-        """, (title, author, cover_url, asin))
-        self.conn.commit()
+        try:
+            cursor.execute("""
+                UPDATE books
+                SET title = %s, author = %s, cover_url = %s
+                WHERE asin = %s
+            """, (title, author, cover_url, asin))
+            self.conn.commit()
+        finally:
+            cursor.close()
 
     def mark_book_deleted(self, asin: str) -> None:
         """
@@ -233,30 +257,39 @@ class Database:
             asin: Amazon Standard Identification Number
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            UPDATE books
-            SET is_deleted = 1
-            WHERE asin = %s
-        """, (asin,))
-        self.conn.commit()
+        try:
+            cursor.execute("""
+                UPDATE books
+                SET is_deleted = 1
+                WHERE asin = %s
+            """, (asin,))
+            self.conn.commit()
+        finally:
+            cursor.close()
 
     def undelete_book(self, asin: str) -> None:
         """Restore a deleted book."""
         cursor = self.conn.cursor()
-        cursor.execute("""
-            UPDATE books
-            SET is_deleted = 0
-            WHERE asin = %s
-        """, (asin,))
-        self.conn.commit()
+        try:
+            cursor.execute("""
+                UPDATE books
+                SET is_deleted = 0
+                WHERE asin = %s
+            """, (asin,))
+            self.conn.commit()
+        finally:
+            cursor.close()
 
     def update_book_sample_status(self, asin: str, is_sample: bool) -> None:
         """Update whether a book is a sample or owned."""
         cursor = self.conn.cursor()
-        cursor.execute("""
-            UPDATE books SET is_sample = %s WHERE asin = %s
-        """, (1 if is_sample else 0, asin))
-        self.conn.commit()
+        try:
+            cursor.execute("""
+                UPDATE books SET is_sample = %s WHERE asin = %s
+            """, (1 if is_sample else 0, asin))
+            self.conn.commit()
+        finally:
+            cursor.close()
 
     def add_price_history(self, asin: str, price: float,
                          list_price: float = None) -> None:
@@ -269,11 +302,14 @@ class Database:
             list_price: Original list price (optional)
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO price_history (asin, price, list_price, check_date)
-            VALUES (%s, %s, %s, %s)
-        """, (asin, price, list_price, datetime.now()))
-        self.conn.commit()
+        try:
+            cursor.execute("""
+                INSERT INTO price_history (asin, price, list_price, check_date)
+                VALUES (%s, %s, %s, %s)
+            """, (asin, price, list_price, datetime.now()))
+            self.conn.commit()
+        finally:
+            cursor.close()
 
     def get_latest_price(self, asin: str) -> Optional[Dict[str, Any]]:
         """
@@ -286,14 +322,17 @@ class Database:
             Dictionary with price data or None if no history exists
         """
         cursor = self.conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT * FROM price_history
-            WHERE asin = %s
-            ORDER BY id DESC
-            LIMIT 1
-        """, (asin,))
-        result = cursor.fetchone()
-        return result
+        try:
+            cursor.execute("""
+                SELECT * FROM price_history
+                WHERE asin = %s
+                ORDER BY id DESC
+                LIMIT 1
+            """, (asin,))
+            result = cursor.fetchone()
+            return result
+        finally:
+            cursor.close()
 
     def get_previous_price(self, asin: str) -> Optional[float]:
         """
@@ -309,14 +348,17 @@ class Database:
             Previous price as float or None if no previous price exists
         """
         cursor = self.conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT price FROM price_history
-            WHERE asin = %s
-            ORDER BY id DESC
-            LIMIT 1
-        """, (asin,))
-        result = cursor.fetchone()
-        return float(result['price']) if result and result['price'] is not None else None
+        try:
+            cursor.execute("""
+                SELECT price FROM price_history
+                WHERE asin = %s
+                ORDER BY id DESC
+                LIMIT 1
+            """, (asin,))
+            result = cursor.fetchone()
+            return float(result['price']) if result and result['price'] is not None else None
+        finally:
+            cursor.close()
 
     def was_checked_today(self, asin: str, deal_day: datetime) -> bool:
         """
@@ -330,12 +372,15 @@ class Database:
             True if already checked today, False otherwise
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT COUNT(*) as count FROM price_history
-            WHERE asin = %s AND check_date >= %s
-        """, (asin, deal_day))
-        result = cursor.fetchone()
-        return result[0] > 0
+        try:
+            cursor.execute("""
+                SELECT COUNT(*) as count FROM price_history
+                WHERE asin = %s AND check_date >= %s
+            """, (asin, deal_day))
+            result = cursor.fetchone()
+            return result[0] > 0
+        finally:
+            cursor.close()
 
     def add_notification(self, asin: str, notified_price: float) -> None:
         """
@@ -346,11 +391,14 @@ class Database:
             notified_price: Price at which notification was sent
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO notifications (asin, notified_price, notified_date)
-            VALUES (%s, %s, %s)
-        """, (asin, notified_price, datetime.now()))
-        self.conn.commit()
+        try:
+            cursor.execute("""
+                INSERT INTO notifications (asin, notified_price, notified_date)
+                VALUES (%s, %s, %s)
+            """, (asin, notified_price, datetime.now()))
+            self.conn.commit()
+        finally:
+            cursor.close()
 
     def get_last_notification(self, asin: str) -> Optional[Dict[str, Any]]:
         """
@@ -363,26 +411,80 @@ class Database:
             Dictionary with notification data or None if no notifications exist
         """
         cursor = self.conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT * FROM notifications
-            WHERE asin = %s
-            ORDER BY id DESC
-            LIMIT 1
-        """, (asin,))
-        result = cursor.fetchone()
-        return result
+        try:
+            cursor.execute("""
+                SELECT * FROM notifications
+                WHERE asin = %s
+                ORDER BY id DESC
+                LIMIT 1
+            """, (asin,))
+            result = cursor.fetchone()
+            return result
+        finally:
+            cursor.close()
 
     def get_sample_books(self) -> List[Dict[str, Any]]:
         """
-        Get all sample books that are not deleted.
+        Get all sample books that are not deleted and don't have an owned copy.
+
+        Books with has_owned_copy=1 are excluded — the user already owns them,
+        so there's no need to track deals on the sample.
 
         Returns:
             List of dictionaries with book data
         """
         cursor = self.conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM books WHERE is_sample = 1 AND is_deleted = 0")
-        results = cursor.fetchall()
-        return results
+        try:
+            cursor.execute("""
+                SELECT * FROM books
+                WHERE is_sample = 1 AND is_deleted = 0 AND has_owned_copy = 0
+            """)
+            results = cursor.fetchall()
+            return results
+        finally:
+            cursor.close()
+
+    def set_has_owned_copy(self, asin: str, value: bool) -> None:
+        """
+        Mark or unmark a sample book as also having an owned copy.
+
+        When True, the book is excluded from deal checking since the user
+        already owns the full book. The sample can be deleted from the library.
+
+        Args:
+            asin: Amazon Standard Identification Number
+            value: True if an owned copy exists alongside the sample
+        """
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE books SET has_owned_copy = %s WHERE asin = %s
+            """, (1 if value else 0, asin))
+            self.conn.commit()
+        finally:
+            cursor.close()
+
+    def get_samples_with_owned_copies(self) -> List[Dict[str, Any]]:
+        """
+        Get all sample books that also have an owned copy.
+
+        These are candidates for sample deletion — the user owns the full book
+        and the sample is redundant.
+
+        Returns:
+            List of dictionaries with book data (asin, title, author, etc.)
+        """
+        cursor = self.conn.cursor(dictionary=True)
+        try:
+            cursor.execute("""
+                SELECT * FROM books
+                WHERE is_sample = 1 AND is_deleted = 0 AND has_owned_copy = 1
+                ORDER BY title
+            """)
+            results = cursor.fetchall()
+            return results
+        finally:
+            cursor.close()
 
     def add_recommendation(self, source_asin: str, recommended_asin: str) -> None:
         """
@@ -403,6 +505,8 @@ class Database:
             # Duplicate recommendation - already exists, ignore
             self.conn.rollback()
             pass
+        finally:
+            cursor.close()
 
     def get_recommendations(self, source_asin: str) -> List[str]:
         """
@@ -415,12 +519,15 @@ class Database:
             List of recommended ASINs
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT recommended_asin FROM recommendations
-            WHERE source_asin = %s
-        """, (source_asin,))
-        results = cursor.fetchall()
-        return [row[0] for row in results]
+        try:
+            cursor.execute("""
+                SELECT recommended_asin FROM recommendations
+                WHERE source_asin = %s
+            """, (source_asin,))
+            results = cursor.fetchall()
+            return [row[0] for row in results]
+        finally:
+            cursor.close()
 
     def has_recommendations(self, source_asin: str) -> bool:
         """
@@ -433,12 +540,15 @@ class Database:
             True if recommendations exist, False otherwise
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT COUNT(*) FROM recommendations
-            WHERE source_asin = %s
-        """, (source_asin,))
-        count = cursor.fetchone()[0]
-        return count > 0
+        try:
+            cursor.execute("""
+                SELECT COUNT(*) FROM recommendations
+                WHERE source_asin = %s
+            """, (source_asin,))
+            count = cursor.fetchone()[0]
+            return count > 0
+        finally:
+            cursor.close()
 
     def get_all_recommended_asins(self) -> Dict[str, str]:
         """
@@ -449,14 +559,17 @@ class Database:
             (titles are 'Unknown' if not yet fetched from API)
         """
         cursor = self.conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT r.recommended_asin, b.title
-            FROM recommendations r
-            JOIN books b ON r.source_asin = b.asin
-            WHERE b.is_sample = 1 AND b.is_deleted = 0
-        """)
-        results = cursor.fetchall()
-        return {row['recommended_asin']: row['title'] or 'Unknown' for row in results}
+        try:
+            cursor.execute("""
+                SELECT r.recommended_asin, b.title
+                FROM recommendations r
+                JOIN books b ON r.source_asin = b.asin
+                WHERE b.is_sample = 1 AND b.is_deleted = 0
+            """)
+            results = cursor.fetchall()
+            return {row['recommended_asin']: row['title'] or 'Unknown' for row in results}
+        finally:
+            cursor.close()
 
     def add_deal_check(self, asin: str, was_deal: bool, notified: bool) -> None:
         """
@@ -482,6 +595,8 @@ class Database:
             # Already checked today - ignore
             self.conn.rollback()
             pass
+        finally:
+            cursor.close()
 
     def was_deal_checked_today(self, asin: str) -> bool:
         """
@@ -494,12 +609,15 @@ class Database:
             True if already checked today, False otherwise
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT COUNT(*) FROM deal_checks
-            WHERE asin = %s AND check_date = CURDATE()
-        """, (asin,))
-        count = cursor.fetchone()[0]
-        return count > 0
+        try:
+            cursor.execute("""
+                SELECT COUNT(*) FROM deal_checks
+                WHERE asin = %s AND check_date = CURDATE()
+            """, (asin,))
+            count = cursor.fetchone()[0]
+            return count > 0
+        finally:
+            cursor.close()
 
     def get_unchecked_recommendation_asins(self) -> List[str]:
         """
@@ -512,17 +630,20 @@ class Database:
             List of recommended ASIN strings
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT r.recommended_asin
-            FROM recommendations r
-            JOIN books b ON r.source_asin = b.asin
-            WHERE b.is_sample = 1 AND b.is_deleted = 0
-            AND r.recommended_asin NOT IN (
-                SELECT asin FROM deal_checks WHERE check_date = CURDATE()
-            )
-        """)
-        results = cursor.fetchall()
-        return [row[0] for row in results]
+        try:
+            cursor.execute("""
+                SELECT DISTINCT r.recommended_asin
+                FROM recommendations r
+                JOIN books b ON r.source_asin = b.asin
+                WHERE b.is_sample = 1 AND b.is_deleted = 0
+                AND r.recommended_asin NOT IN (
+                    SELECT asin FROM deal_checks WHERE check_date = CURDATE()
+                )
+            """)
+            results = cursor.fetchall()
+            return [row[0] for row in results]
+        finally:
+            cursor.close()
 
     def add_recommendation_book(self, asin: str, title: str = None,
                                 author: str = None, cover_url: str = None) -> None:
@@ -540,15 +661,18 @@ class Database:
             cover_url: URL to book cover image (optional)
         """
         cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO books (asin, title, author, cover_url, date_added, is_sample, is_deleted, is_recommendation)
-            VALUES (%s, %s, %s, %s, %s, 0, 0, 1)
-            ON DUPLICATE KEY UPDATE
-                title = COALESCE(%s, title),
-                author = COALESCE(%s, author),
-                cover_url = COALESCE(%s, cover_url)
-        """, (asin, title, author, cover_url, datetime.now(), title, author, cover_url))
-        self.conn.commit()
+        try:
+            cursor.execute("""
+                INSERT INTO books (asin, title, author, cover_url, date_added, is_sample, is_deleted, is_recommendation)
+                VALUES (%s, %s, %s, %s, %s, 0, 0, 1)
+                ON DUPLICATE KEY UPDATE
+                    title = COALESCE(%s, title),
+                    author = COALESCE(%s, author),
+                    cover_url = COALESCE(%s, cover_url)
+            """, (asin, title, author, cover_url, datetime.now(), title, author, cover_url))
+            self.conn.commit()
+        finally:
+            cursor.close()
 
     def get_recommendation_source(self, asin: str) -> Optional[str]:
         """
@@ -561,16 +685,19 @@ class Database:
             Source book title, or None if not found
         """
         cursor = self.conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT b.title
-            FROM recommendations r
-            JOIN books b ON r.source_asin = b.asin
-            WHERE r.recommended_asin = %s
-            AND b.is_sample = 1 AND b.is_deleted = 0
-            LIMIT 1
-        """, (asin,))
-        result = cursor.fetchone()
-        return result['title'] if result else None
+        try:
+            cursor.execute("""
+                SELECT b.title
+                FROM recommendations r
+                JOIN books b ON r.source_asin = b.asin
+                WHERE r.recommended_asin = %s
+                AND b.is_sample = 1 AND b.is_deleted = 0
+                LIMIT 1
+            """, (asin,))
+            result = cursor.fetchone()
+            return result['title'] if result else None
+        finally:
+            cursor.close()
 
     def close(self):
         """Close the database connection."""
