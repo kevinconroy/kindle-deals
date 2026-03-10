@@ -295,7 +295,8 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                 # Navigate to specific page
                 if page_num > 1:
                     page.goto(f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber={page_num}")
-                    page.wait_for_load_state('networkidle')
+                    page.wait_for_load_state('domcontentloaded')
+                    page.wait_for_timeout(2000)
 
                 # Find all item checkboxes — their id format is "{ASIN}:KindleEBook" or "{ASIN}:KindleEBookSample"
                 # This gives us both the ASIN and sample/owned classification in one selector
