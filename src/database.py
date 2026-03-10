@@ -135,7 +135,9 @@ class Database:
                     price DECIMAL(10,2),
                     list_price DECIMAL(10,2),
                     check_date DATETIME NOT NULL,
-                    FOREIGN KEY (asin) REFERENCES books(asin)
+                    FOREIGN KEY (asin) REFERENCES books(asin),
+                    INDEX idx_price_history_asin_date (asin, check_date),
+                    INDEX idx_price_history_asin_id (asin, id)
                 )
             """)
 
@@ -174,6 +176,21 @@ class Database:
                     UNIQUE KEY unique_daily_check (asin, check_date)
                 )
             """)
+
+            # Migrate: add performance indexes (for existing databases)
+            try:
+                cursor.execute("""
+                    SELECT INDEX_NAME FROM information_schema.STATISTICS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'price_history'
+                    AND INDEX_NAME = 'idx_price_history_asin_date'
+                """, (self.database,))
+                rows = cursor.fetchall()
+                if not rows:
+                    cursor.execute("ALTER TABLE price_history ADD INDEX idx_price_history_asin_date (asin, check_date)")
+                    cursor.execute("ALTER TABLE price_history ADD INDEX idx_price_history_asin_id (asin, id)")
+                    self.conn.commit()
+            except Exception:
+                pass
 
             self.conn.commit()
         finally:
@@ -698,6 +715,7 @@ class Database:
             return result['title'] if result else None
         finally:
             cursor.close()
+
 
     def close(self):
         """Close the database connection."""
