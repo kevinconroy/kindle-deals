@@ -631,6 +631,7 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
         last_notification = db.get_last_notification(asin)
         last_notified_price = float(last_notification['notified_price']) if last_notification and last_notification['notified_price'] is not None else None
 
+        notified_flag = False
         if should_notify(current_price, list_price, last_notified_price):
             savings_percent = calculate_savings_percent(current_price, list_price)
             source_title = db.get_recommendation_source(asin)
@@ -651,12 +652,12 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
             if not dry_run:
                 db.add_notification(asin, current_price)
 
+            notified_flag = True
             logger.info(f"Recommended deal: {title} - ${current_price:.2f} ({match_reason})")
 
         if not dry_run:
             was_deal = is_deal(current_price, list_price)
-            notified = bool(deals_found and deals_found[-1]['asin'] == asin)
-            db.add_deal_check(asin, was_deal=was_deal, notified=notified)
+            db.add_deal_check(asin, was_deal=was_deal, notified=notified_flag)
 
     logger.info(f"Recommendation check complete: {len(scrape_results)} checked, {error_count} errors, {len(deals_found)} deals found")
     return deals_found
