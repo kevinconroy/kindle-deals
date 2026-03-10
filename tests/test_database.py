@@ -364,3 +364,80 @@ def test_get_recommendation_source_not_found(clean_db):
     """Test getting source for a non-existent recommendation."""
     source_title = clean_db.get_recommendation_source('NOTEXIST')
     assert source_title is None
+
+
+def test_get_checked_today_asins(clean_db):
+    """Test bulk fetch of ASINs already checked today."""
+    clean_db.add_book(asin='B001', title='Book 1')
+    clean_db.add_book(asin='B002', title='Book 2')
+    clean_db.add_price_history('B001', 9.99, 19.99)
+
+    from datetime import datetime
+    deal_day = datetime.combine(datetime.now().date(), datetime.min.time())
+    checked = clean_db.get_checked_today_asins(deal_day)
+    assert 'B001' in checked
+    assert 'B002' not in checked
+
+
+def test_get_bulk_previous_prices(clean_db):
+    """Test bulk fetch of previous prices for multiple ASINs."""
+    clean_db.add_book(asin='B001', title='Book 1')
+    clean_db.add_book(asin='B002', title='Book 2')
+    clean_db.add_price_history('B001', 9.99, 19.99)
+    clean_db.add_price_history('B001', 7.99, 19.99)
+    clean_db.add_price_history('B002', 3.99, 14.99)
+
+    prices = clean_db.get_bulk_previous_prices(['B001', 'B002', 'B003'])
+    assert prices['B001'] == 7.99
+    assert prices['B002'] == 3.99
+    assert 'B003' not in prices
+
+
+def test_get_bulk_last_notifications(clean_db):
+    """Test bulk fetch of last notification prices for multiple ASINs."""
+    clean_db.add_book(asin='B001', title='Book 1')
+    clean_db.add_book(asin='B002', title='Book 2')
+    clean_db.add_notification('B001', 9.99)
+    clean_db.add_notification('B001', 7.99)
+    clean_db.add_notification('B002', 3.99)
+
+    notifications = clean_db.get_bulk_last_notifications(['B001', 'B002', 'B003'])
+    assert notifications['B001'] == 7.99
+    assert notifications['B002'] == 3.99
+    assert 'B003' not in notifications
+
+
+def test_get_existing_asins(clean_db):
+    """Test bulk fetch of known ASINs."""
+    clean_db.add_book(asin='B001', title='Book 1')
+    clean_db.add_book(asin='B002', title='Book 2')
+
+    known = clean_db.get_existing_asins(['B001', 'B002', 'B999'])
+    assert 'B001' in known
+    assert 'B002' in known
+    assert 'B999' not in known
+
+
+def test_add_recommendations_bulk(clean_db):
+    """Test bulk recommendation insert."""
+    clean_db.add_book(asin='B001', title='Book 1')
+    clean_db.add_recommendations_bulk([('B001', 'R001'), ('B001', 'R002')])
+    recs = clean_db.get_recommendations('B001')
+    assert set(recs) == {'R001', 'R002'}
+
+
+def test_get_bulk_recommendation_sources(clean_db):
+    """Test bulk fetch of recommendation source titles."""
+    clean_db.add_book(asin='B001', title='The Way of Kings')
+    clean_db.add_recommendation('B001', 'R001')
+    clean_db.add_recommendation('B001', 'R002')
+
+    sources = clean_db.get_bulk_recommendation_sources(['R001', 'R002', 'R999'])
+    assert sources['R001'] == 'The Way of Kings'
+    assert sources['R002'] == 'The Way of Kings'
+    assert 'R999' not in sources
+
+
+def test_ping_reconnect(clean_db):
+    """Test ping_reconnect does not raise."""
+    clean_db.ping_reconnect()  # Should not raise

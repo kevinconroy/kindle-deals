@@ -716,6 +716,132 @@ class Database:
         finally:
             cursor.close()
 
+    def get_checked_today_asins(self, deal_day) -> set:
+        """Bulk-fetch all ASINs that already have a price_history entry since deal_day."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                SELECT DISTINCT asin FROM price_history WHERE check_date >= %s
+            """, (deal_day,))
+            return {row[0] for row in cursor.fetchall()}
+        finally:
+            cursor.close()
+
+    def get_bulk_previous_prices(self, asins: list) -> dict:
+        """Fetch the most recent price for each ASIN in one query. Returns dict asin->float."""
+        if not asins:
+            return {}
+        placeholders = ','.join(['%s'] * len(asins))
+        cursor = self.conn.cursor(dictionary=True)
+        try:
+            cursor.execute(f"""
+                SELECT ph.asin, ph.price
+                FROM price_history ph
+                INNER JOIN (
+                    SELECT asin, MAX(id) AS max_id
+                    FROM price_history
+                    WHERE asin IN ({placeholders})
+                    GROUP BY asin
+                ) latest ON ph.asin = latest.asin AND ph.id = latest.max_id
+            """, asins)
+            return {
+                row['asin']: float(row['price'])
+                for row in cursor.fetchall()
+                if row['price'] is not None
+            }
+        finally:
+            cursor.close()
+
+    def get_bulk_last_notifications(self, asins: list) -> dict:
+        """Fetch the most recent notified_price for each ASIN in one query. Returns dict asin->float."""
+        if not asins:
+            return {}
+        placeholders = ','.join(['%s'] * len(asins))
+        cursor = self.conn.cursor(dictionary=True)
+        try:
+            cursor.execute(f"""
+                SELECT n.asin, n.notified_price
+                FROM notifications n
+                INNER JOIN (
+                    SELECT asin, MAX(id) AS max_id
+                    FROM notifications
+                    WHERE asin IN ({placeholders})
+                    GROUP BY asin
+                ) latest ON n.asin = latest.asin AND n.id = latest.max_id
+            """, asins)
+            return {
+                row['asin']: float(row['notified_price'])
+                for row in cursor.fetchall()
+                if row['notified_price'] is not None
+            }
+        finally:
+            cursor.close()
+
+    def get_existing_asins(self, asins: list) -> set:
+        """Bulk check which ASINs already exist in books table. Replaces per-book get_book() calls."""
+        if not asins:
+            return set()
+        placeholders = ','.join(['%s'] * len(asins))
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(f"SELECT asin FROM books WHERE asin IN ({placeholders})", asins)
+            return {row[0] for row in cursor.fetchall()}
+        finally:
+            cursor.close()
+
+    def get_asins_with_recommendations(self) -> set:
+        """Return set of source ASINs that already have recommendations stored."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT DISTINCT source_asin FROM recommendations")
+            return {row[0] for row in cursor.fetchall()}
+        finally:
+            cursor.close()
+
+    def add_recommendations_bulk(self, rows: list) -> None:
+        """Bulk-insert (source_asin, recommended_asin) pairs. Silently ignores duplicates."""
+        if not rows:
+            return
+        cursor = self.conn.cursor()
+        try:
+            now = datetime.now()
+            cursor.executemany("""
+                INSERT IGNORE INTO recommendations (source_asin, recommended_asin, created_date)
+                VALUES (%s, %s, %s)
+            """, [(src, rec, now) for src, rec in rows])
+            self.conn.commit()
+        finally:
+            cursor.close()
+
+    def get_bulk_recommendation_sources(self, asins: list) -> dict:
+        """Fetch source book title for each recommended ASIN in one query. Returns dict asin->title."""
+        if not asins:
+            return {}
+        placeholders = ','.join(['%s'] * len(asins))
+        cursor = self.conn.cursor(dictionary=True)
+        try:
+            cursor.execute(f"""
+                SELECT r.recommended_asin, b.title
+                FROM recommendations r
+                JOIN books b ON r.source_asin = b.asin
+                WHERE r.recommended_asin IN ({placeholders})
+                AND b.is_sample = 1 AND b.is_deleted = 0
+            """, asins)
+            results = {}
+            for row in cursor.fetchall():
+                if row['recommended_asin'] not in results:
+                    results[row['recommended_asin']] = row['title']
+            return results
+        finally:
+            cursor.close()
+
+    def ping_reconnect(self) -> None:
+        """Ping the MySQL connection and reconnect if dropped."""
+        try:
+            self.conn.ping(reconnect=True, attempts=3, delay=2)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"DB reconnect attempt failed: {e}")
 
     def close(self):
         """Close the database connection."""
