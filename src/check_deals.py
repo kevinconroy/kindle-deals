@@ -8,6 +8,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+from urllib.parse import quote
 
 from config import Config
 from database import Database
@@ -337,6 +338,19 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
                 db.add_deal_check(asin, was_deal=False, notified=False)
             continue
 
+        # Check notification rules — do not re-notify at same/higher price
+        last_notification = db.get_last_notification(asin)
+        last_notified_price = (
+            float(last_notification['notified_price'])
+            if last_notification and last_notification['notified_price'] is not None
+            else None
+        )
+        if not should_notify(current_price, list_price, last_notified_price):
+            logger.debug(f"Skipping {title} - already notified at same/lower price (${last_notified_price})")
+            if not dry_run:
+                db.add_deal_check(asin, was_deal=True, notified=False)
+            continue
+
         savings_percent = calculate_savings_percent(current_price, list_price)
         previous_price = db.get_previous_price(asin) if db.get_book(asin) else None
         logger.info(f"Daily deal match: {title} - ${current_price:.2f} ({match_reason})")
@@ -354,6 +368,7 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
         })
 
         if not dry_run:
+            db.add_notification(asin, current_price)
             db.add_deal_check(asin, was_deal=True, notified=True)
 
         time.sleep(check_delay / 1000)
@@ -490,7 +505,6 @@ async def _async_scrape_recommendations(session_path: str, headless: bool,
     from playwright.async_api import async_playwright
 
     results = []
-    semaphore = asyncio.Semaphore(concurrency)
     checked_count = 0
 
     async with async_playwright() as p:
@@ -500,25 +514,36 @@ async def _async_scrape_recommendations(session_path: str, headless: bool,
         )
         context.set_default_timeout(page_timeout)
 
+        # Pre-create a fixed pool of pages and reuse them — avoids per-ASIN
+        # page creation/teardown overhead that causes CPU spikes
+        page_pool: asyncio.Queue = asyncio.Queue()
+        pages = [await context.new_page() for _ in range(concurrency)]
+        for p_obj in pages:
+            await page_pool.put(p_obj)
+
         async def scrape_one(asin: str):
             nonlocal checked_count
-            async with semaphore:
-                page = await context.new_page()
-                try:
-                    result = await _async_scrape_book_info(page, asin)
-                    await asyncio.sleep(check_delay / 1000)
-                    checked_count += 1
-                    if checked_count % 50 == 0:
-                        logger.info(f"Progress: {checked_count}/{len(rec_asins)} recommendations checked")
-                    return (asin, result)
-                except Exception as e:
-                    logger.error(f"Worker error for {asin}: {e}")
-                    return (asin, None)
-                finally:
-                    await page.close()
+            page = await page_pool.get()
+            try:
+                logger.debug(f"Scraping recommendation: {asin}")
+                result = await _async_scrape_book_info(page, asin)
+                await asyncio.sleep(check_delay / 1000)
+                checked_count += 1
+                if checked_count % 10 == 0:
+                    logger.info(f"Progress: {checked_count}/{len(rec_asins)} recommendations checked")
+                return (asin, result)
+            except Exception as e:
+                logger.error(f"Worker error for {asin}: {e}")
+                return (asin, None)
+            finally:
+                await page_pool.put(page)
 
         tasks = [scrape_one(asin) for asin in rec_asins]
         results = await asyncio.gather(*tasks)
+
+        # Close pooled pages
+        for p_obj in pages:
+            await p_obj.close()
 
         # Save session state
         await context.storage_state(path=session_path)
@@ -850,6 +875,23 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
             logger.info(f"  [Recommended] {deal['title']} (${deal['current_price']:.2f})")
     else:
         logger.info("No deals found")
+
+    # Report samples that have owned copies (eligible for cleanup)
+    cleanup_books = db.get_samples_with_owned_copies()
+    if cleanup_books:
+        logger.info(f"\n{'='*60}")
+        logger.info(f"SAMPLE CLEANUP: {len(cleanup_books)} book(s) are owned but still have a sample in your library.")
+        logger.info("Delete the redundant sample at these URLs:")
+        for book in cleanup_books:
+            title = book.get('title')
+            if title:
+                encoded_title = quote(title, safe=':')
+                url = f"https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc/{encoded_title}"
+            else:
+                url = "https://www.amazon.com/hz/mycd/digital-console/contentlist/booksAll/dateDsc"
+            display = title or book['asin']
+            logger.info(f"  {display}: {url}")
+        logger.info(f"{'='*60}\n")
 
 
 def send_notification_for_recent_deals(config: Config, db: Database, hours: int = 24):
