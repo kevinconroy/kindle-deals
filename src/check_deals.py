@@ -56,7 +56,8 @@ def calculate_savings_percent(current_price: float, list_price: float) -> int:
     return int(round(savings))
 
 
-def scrape_book_info(page, asin: str, domain: str = 'amazon.com') -> Optional[Dict[str, Any]]:
+def scrape_book_info(page, asin: str, domain: str = 'amazon.com',
+                     scraper=None) -> Optional[Dict[str, Any]]:
     """Scrape book information from Amazon product page"""
     try:
         # Navigate to product page
@@ -70,10 +71,14 @@ def scrape_book_info(page, asin: str, domain: str = 'amazon.com') -> Optional[Di
         # Check if we hit a CAPTCHA or login page
         if page.locator('input[name="email"]').count() > 0:
             logger.error(f"Hit login page for {asin} - session may have expired")
+            if scraper:
+                scraper.mark_session_invalid()
             return None
 
         if page.locator('form[action*="captcha"]').count() > 0:
             logger.error(f"Hit CAPTCHA for {asin} - may need to slow down")
+            if scraper:
+                scraper.mark_session_invalid()
             return None
 
         # Check if book is already owned (has "Read Now" button)
@@ -251,21 +256,36 @@ def scrape_daily_deals(page, domain: str = 'amazon.com') -> List[str]:
     deals_url = f"https://www.{domain}/amz-books/book-deals?filters=v1%3AFORMAT%5Bkindle_edition%5D"
 
     logger.info("Navigating to daily deals page...")
-    page.goto(deals_url, wait_until='domcontentloaded', timeout=30000)
-    page.wait_for_timeout(3000)
+    try:
+        page.goto(deals_url, wait_until='domcontentloaded', timeout=30000)
+        page.wait_for_timeout(3000)
+    except Exception as e:
+        logger.error(f"Failed to load daily deals page: {e}")
+        return []
+
+    # Check for session expiry or CAPTCHA
+    if page.locator('input[name="email"]').count() > 0:
+        logger.error("Hit login page on daily deals — session expired")
+        return []
+    if page.locator('form[action*="captcha"]').count() > 0:
+        logger.error("Hit CAPTCHA on daily deals page")
+        return []
 
     asins = []
-    products = page.locator('[data-asin]').all()
-    logger.info(f"Found {len(products)} products on deals page")
-
-    for product in products:
-        try:
-            asin = product.get_attribute('data-asin')
-            if asin and len(asin) == 10:
-                asins.append(asin)
-        except Exception as e:
-            logger.debug(f"Error extracting ASIN: {e}")
-            continue
+    try:
+        products = page.locator('[data-asin]').all()
+        logger.info(f"Found {len(products)} products on deals page")
+        for product in products:
+            try:
+                asin = product.get_attribute('data-asin')
+                if asin and len(asin) == 10:
+                    asins.append(asin)
+            except Exception as e:
+                logger.debug(f"Error extracting ASIN: {e}")
+                continue
+    except Exception as e:
+        logger.error(f"Error scraping daily deals ASINs: {e}")
+        return []
 
     unique_asins = list(set(asins))
     logger.info(f"Found {len(unique_asins)} unique deal ASINs")
@@ -273,7 +293,7 @@ def scrape_daily_deals(page, domain: str = 'amazon.com') -> List[str]:
 
 
 def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool = False,
-                            domain: str = 'amazon.com') -> List[Dict[str, Any]]:
+                            domain: str = 'amazon.com', scraper=None) -> List[Dict[str, Any]]:
     """
     Check today's daily deals for matches against user's interests.
 
@@ -295,7 +315,7 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
             continue
 
         # Scrape book info using the full scraper
-        book_info = scrape_book_info(page, asin, domain=domain)
+        book_info = scrape_book_info(page, asin, domain=domain, scraper=scraper)
 
         if not book_info or book_info.get('already_owned'):
             if not dry_run:
@@ -515,9 +535,6 @@ async def _async_scrape_recommendations(session_path: str, headless: bool,
         # Pre-create a fixed pool of pages and reuse them — avoids per-ASIN
         # page creation/teardown overhead that causes CPU spikes
         page_pool: asyncio.Queue = asyncio.Queue()
-        pages = [await context.new_page() for _ in range(concurrency)]
-        for p_obj in pages:
-            await page_pool.put(p_obj)
 
         async def scrape_one(asin: str):
             nonlocal checked_count
@@ -536,15 +553,36 @@ async def _async_scrape_recommendations(session_path: str, headless: bool,
             finally:
                 await page_pool.put(page)
 
-        tasks = [scrape_one(asin) for asin in rec_asins]
-        results = await asyncio.gather(*tasks)
+        pages = []
+        try:
+            pages = [await context.new_page() for _ in range(concurrency)]
+            for p_obj in pages:
+                await page_pool.put(p_obj)
 
-        # Close pooled pages
-        for p_obj in pages:
-            await p_obj.close()
+            tasks = [scrape_one(asin) for asin in rec_asins]
+            raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Save session state
-        await context.storage_state(path=session_path)
+            # Handle exceptions (CancelledError is BaseException, not caught by inner try/except)
+            results = []
+            for raw in raw_results:
+                if isinstance(raw, BaseException):
+                    logger.error(f"Async task raised: {raw}")
+                    continue
+                results.append(raw)  # each is (asin, info_or_None)
+
+        finally:
+            for p_obj in pages:
+                try:
+                    await p_obj.close()
+                except Exception:
+                    pass
+
+        # Only save session state if at least one scrape succeeded
+        successful = sum(1 for _, info in results if info is not None)
+        if successful > 0:
+            await context.storage_state(path=session_path)
+        else:
+            logger.warning("No recommendations scraped successfully — not saving session state")
         await context.close()
         await browser.close()
 
@@ -749,7 +787,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
 
                     try:
                         # Scrape book information
-                        book_info = scrape_book_info(page, asin, domain=amazon_domain)
+                        book_info = scrape_book_info(page, asin, domain=amazon_domain, scraper=scraper)
 
                         if not book_info:
                             logger.warning(f"Could not scrape info for {asin}")
@@ -838,7 +876,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
             # Phase 2: Check daily deals
             if not skip_daily and not target_asin:
                 daily_deals = check_daily_deals_phase(page, db, check_delay, dry_run,
-                                                      domain=amazon_domain)
+                                                      domain=amazon_domain, scraper=scraper)
                 tracked_deals.extend(daily_deals)
 
         finally:

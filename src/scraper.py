@@ -15,6 +15,7 @@ class AmazonScraper:
         self.playwright = None
         self.browser = None
         self.context = None
+        self._session_valid = True  # set to False if CAPTCHA/login detected
 
     def __enter__(self):
         self.playwright = sync_playwright().start()
@@ -28,10 +29,19 @@ class AmazonScraper:
 
         return self
 
+    def mark_session_invalid(self):
+        """Call when a login page or CAPTCHA is detected to prevent saving corrupt state."""
+        self._session_valid = False
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.context:
-            # Save session state
-            self.context.storage_state(path=self.session_path)
+            if self._session_valid:
+                try:
+                    self.context.storage_state(path=self.session_path)
+                except Exception:
+                    pass
+            else:
+                logger.warning("Session invalidated (CAPTCHA/login detected) — not saving state")
             self.context.close()
         if self.browser:
             self.browser.close()

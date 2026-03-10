@@ -27,7 +27,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def scrape_recommendations(page, asin: str, domain: str = 'amazon.com') -> List[str]:
+def scrape_recommendations(page, asin: str, domain: str = 'amazon.com',
+                           scraper=None) -> List[str]:
     """
     Scrape 'Customers who bought this also bought' ASINs from product page.
 
@@ -35,6 +36,7 @@ def scrape_recommendations(page, asin: str, domain: str = 'amazon.com') -> List[
         page: Playwright page object
         asin: Book ASIN to scrape recommendations for
         domain: Amazon domain to use (e.g. 'amazon.com', 'amazon.co.uk')
+        scraper: Optional AmazonScraper instance for session invalidation
 
     Returns:
         List of recommended ASINs
@@ -44,6 +46,18 @@ def scrape_recommendations(page, asin: str, domain: str = 'amazon.com') -> List[
         logger.debug(f"Scraping recommendations from {url}")
         page.goto(url, wait_until='domcontentloaded', timeout=15000)
         page.wait_for_timeout(2000)
+
+        # Check for session expiry or CAPTCHA
+        if page.locator('input[name="email"]').count() > 0:
+            logger.error(f"Hit login page scraping recommendations for {asin}")
+            if scraper:
+                scraper.mark_session_invalid()
+            return []
+        if page.locator('form[action*="captcha"]').count() > 0:
+            logger.error(f"Hit CAPTCHA scraping recommendations for {asin}")
+            if scraper:
+                scraper.mark_session_invalid()
+            return []
 
         recommendations = []
 
@@ -490,7 +504,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                     continue
 
                 # Scrape recommendations
-                recs = scrape_recommendations(page, asin, domain=amazon_domain)
+                recs = scrape_recommendations(page, asin, domain=amazon_domain, scraper=scraper)
 
                 # Store in database
                 for rec_asin in recs:
