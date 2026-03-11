@@ -637,6 +637,13 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
 
     # Reconnect after potentially long async scraping session
     db.ping_reconnect()
+
+    # Bulk pre-fetch previous prices, last notifications, and recommendation sources
+    result_asins = [asin for asin, _ in scrape_results]
+    bulk_prev_prices = db.get_bulk_previous_prices(result_asins)
+    bulk_last_notifs = db.get_bulk_last_notifications(result_asins)
+    bulk_rec_sources = db.get_bulk_recommendation_sources(result_asins)
+
     for asin, book_info in scrape_results:
         if book_info is None:
             error_count += 1
@@ -670,18 +677,17 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
                 db.add_deal_check(asin, was_deal=False, notified=False)
             continue
 
-        # Check notification rules
-        previous_price = db.get_previous_price(asin)
+        # Check notification rules (from bulk pre-fetch)
+        previous_price = bulk_prev_prices.get(asin)
         if not dry_run:
             db.add_price_history(asin, current_price, list_price)
 
-        last_notification = db.get_last_notification(asin)
-        last_notified_price = float(last_notification['notified_price']) if last_notification and last_notification['notified_price'] is not None else None
+        last_notified_price = bulk_last_notifs.get(asin)
 
         notified_flag = False
         if should_notify(current_price, list_price, last_notified_price):
             savings_percent = calculate_savings_percent(current_price, list_price)
-            source_title = db.get_recommendation_source(asin)
+            source_title = bulk_rec_sources.get(asin)
             match_reason = f"Recommended from: {source_title}" if source_title else "Recommended"
 
             deals_found.append({
