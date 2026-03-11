@@ -316,6 +316,10 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
     else:
         already_checked_today = set()
 
+    # Bulk pre-fetch notification and price data for all deal ASINs
+    bulk_last_notifs = db.get_bulk_last_notifications(deal_asins)
+    bulk_prev_prices = db.get_bulk_previous_prices(deal_asins)
+
     for asin in deal_asins:
         # Skip if already checked today
         if not dry_run and asin in already_checked_today:
@@ -364,12 +368,7 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
             continue
 
         # Check notification rules — do not re-notify at same/higher price
-        last_notification = db.get_last_notification(asin)
-        last_notified_price = (
-            float(last_notification['notified_price'])
-            if last_notification and last_notification['notified_price'] is not None
-            else None
-        )
+        last_notified_price = bulk_last_notifs.get(asin)
         if not should_notify(current_price, list_price, last_notified_price):
             logger.debug(f"Skipping {title} - already notified at same/lower price (${last_notified_price})")
             if not dry_run:
@@ -377,7 +376,7 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
             continue
 
         savings_percent = calculate_savings_percent(current_price, list_price)
-        previous_price = db.get_previous_price(asin) if db.get_book(asin) else None
+        previous_price = bulk_prev_prices.get(asin)
         logger.info(f"Daily deal match: {title} - ${current_price:.2f} ({match_reason})")
 
         deals_found.append({
