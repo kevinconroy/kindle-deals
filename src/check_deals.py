@@ -305,9 +305,20 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
     deal_asins = scrape_daily_deals(page, domain=domain)
     logger.info(f"Checking {len(deal_asins)} daily deals for matches...")
 
+    # Bulk fetch already-checked ASINs for today
+    if not dry_run:
+        cursor = db.conn.cursor()
+        try:
+            cursor.execute("SELECT asin FROM deal_checks WHERE check_date = CURDATE()")
+            already_checked_today = {row[0] for row in cursor.fetchall()}
+        finally:
+            cursor.close()
+    else:
+        already_checked_today = set()
+
     for asin in deal_asins:
         # Skip if already checked today
-        if not dry_run and db.was_deal_checked_today(asin):
+        if not dry_run and asin in already_checked_today:
             logger.debug(f"Skipping {asin} - already checked today")
             continue
 
