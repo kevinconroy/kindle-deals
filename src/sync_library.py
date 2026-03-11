@@ -344,21 +344,26 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                         })
                         logger.info(f"Found ASIN: {asin} ({'sample' if is_sample else 'owned'})")
 
-                        # Early-stop tracking
-                        existing = db.get_book(asin)
-                        if existing:
-                            consecutive_known += 1
-                            if not force and consecutive_known >= early_stop_threshold and not should_stop:
-                                logger.info(f"Early stop: {consecutive_known} consecutive known books found on page {page_num}")
-                                should_stop = True
-                        else:
-                            consecutive_known = 0
-
                     except Exception as e:
                         logger.warning(f"Failed to extract ASIN: {e}")
                         continue
 
                 all_items.extend(page_items)
+
+                # Bulk lookup for early-stop tracking (one query per page instead of per-ASIN)
+                page_asins = [item['asin'] for item in page_items]
+                existing_on_page = db.get_existing_asins(page_asins)
+
+                for item in page_items:
+                    asin = item['asin']
+                    existing = asin in existing_on_page
+                    if existing:
+                        consecutive_known += 1
+                        if not force and consecutive_known >= early_stop_threshold and not should_stop:
+                            logger.info(f"Early stop: {consecutive_known} consecutive known books found on page {page_num}")
+                            should_stop = True
+                    else:
+                        consecutive_known = 0
 
                 # TODO: Collection management disabled until selectors are validated against live page
                 # if not skip_collections:
@@ -405,6 +410,10 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                 if 'sample' in kinds and 'owned' in kinds
             }
 
+            # Bulk pre-fetch known ASINs to avoid N+1 get_book queries
+            all_asins_list = list({item['asin'] for item in all_items})
+            known_asins_set = db.get_existing_asins(all_asins_list)
+
             seen_asins: set = set()
             for item in all_items:
                 try:
@@ -417,7 +426,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                     synced_asins.add(asin)
 
                     is_sample_now = item['is_sample']
-                    existing = db.get_book(asin)
+                    existing = db.get_book(asin) if asin in known_asins_set else None
 
                     # Determine if this is a dual-state book:
                     # - Appears as both sample and owned in the current scan, OR
@@ -491,7 +500,8 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
 
             # Scrape recommendations for samples
             logger.info("Scraping recommendations for samples...")
-            rec_count = 0
+            asins_with_recs = db.get_asins_with_recommendations()
+            all_rec_rows = []
             for item in all_items:
                 asin = item['asin']
 
@@ -500,22 +510,22 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                     continue
 
                 # Skip if we already have recommendations
-                if db.has_recommendations(asin):
+                if asin in asins_with_recs:
                     logger.debug(f"Skipping {asin} - already has recommendations")
                     continue
 
                 # Scrape recommendations
                 recs = scrape_recommendations(page, asin, domain=amazon_domain, scraper=scraper)
 
-                # Store in database
+                # Collect recommendation rows for bulk insert
                 for rec_asin in recs:
-                    db.add_recommendation(asin, rec_asin)
-                    rec_count += 1
+                    all_rec_rows.append((asin, rec_asin))
 
                 # Add delay to avoid rate limiting
                 page.wait_for_timeout(3000)
 
-            logger.info(f"Stored {rec_count} recommendations")
+            db.add_recommendations_bulk(all_rec_rows)
+            logger.info(f"Stored {len(all_rec_rows)} recommendations")
 
         except Exception as e:
             logger.error(f"Failed to sync library: {e}")
