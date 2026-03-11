@@ -1,4 +1,5 @@
 import mysql.connector
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -18,6 +19,7 @@ class Database:
         self.user = user
         self.password = password
         self.database = database
+        self._batch_mode = False
 
         # Create database if it doesn't exist
         self._create_database_if_not_exists()
@@ -324,7 +326,8 @@ class Database:
                 INSERT INTO price_history (asin, price, list_price, check_date)
                 VALUES (%s, %s, %s, %s)
             """, (asin, price, list_price, datetime.now()))
-            self.conn.commit()
+            if not self._batch_mode:
+                self.conn.commit()
         finally:
             cursor.close()
 
@@ -413,7 +416,8 @@ class Database:
                 INSERT INTO notifications (asin, notified_price, notified_date)
                 VALUES (%s, %s, %s)
             """, (asin, notified_price, datetime.now()))
-            self.conn.commit()
+            if not self._batch_mode:
+                self.conn.commit()
         finally:
             cursor.close()
 
@@ -607,7 +611,8 @@ class Database:
                 INSERT INTO deal_checks (asin, check_date, was_deal, notified)
                 VALUES (%s, CURDATE(), %s, %s)
             """, (asin, 1 if was_deal else 0, 1 if notified else 0))
-            self.conn.commit()
+            if not self._batch_mode:
+                self.conn.commit()
         except mysql.connector.IntegrityError:
             # Already checked today - ignore
             self.conn.rollback()
@@ -687,7 +692,8 @@ class Database:
                     author = COALESCE(%s, author),
                     cover_url = COALESCE(%s, cover_url)
             """, (asin, title, author, cover_url, datetime.now(), title, author, cover_url))
-            self.conn.commit()
+            if not self._batch_mode:
+                self.conn.commit()
         finally:
             cursor.close()
 
@@ -834,6 +840,27 @@ class Database:
             return results
         finally:
             cursor.close()
+
+    @contextmanager
+    def batch_writes(self):
+        """
+        Context manager that defers auto-commits inside the block.
+        A single commit is issued on clean exit; rollback on exception.
+
+        Usage:
+            with db.batch_writes():
+                db.add_price_history(...)
+                db.add_notification(...)
+        """
+        self._batch_mode = True
+        try:
+            yield
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self._batch_mode = False
 
     def ping_reconnect(self) -> None:
         """Ping the MySQL connection and reconnect if dropped."""

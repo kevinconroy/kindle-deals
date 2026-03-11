@@ -248,6 +248,46 @@ def scrape_book_info(page, asin: str, domain: str = 'amazon.com',
         return None
 
 
+def scrape_book_title_author(page, asin: str, domain: str = 'amazon.com') -> Optional[Dict[str, Any]]:
+    """Lightweight scrape: only fetch title and author for Phase 2 match-gate filtering."""
+    try:
+        url = f"https://www.{domain}/dp/{asin}"
+        page.goto(url, wait_until='domcontentloaded', timeout=15000)
+
+        # Check for session issues
+        if page.locator('input[name="email"]').count() > 0:
+            logger.error(f"Hit login page for {asin}")
+            return None
+        if page.locator('form[action*="captcha"]').count() > 0:
+            logger.error(f"Hit CAPTCHA for {asin}")
+            return None
+
+        title = None
+        try:
+            title_elem = page.locator('#productTitle').first
+            title_elem.wait_for(state='visible', timeout=3000)
+            title = title_elem.inner_text().strip()
+        except Exception:
+            pass
+
+        author = None
+        for selector in ['.author .contributorNameID', '#bylineInfo .author a.contributorNameID',
+                         'span.author a', '#bylineInfo span.author',
+                         'a[data-asin] .author', '.contributorNameTrigger']:
+            try:
+                elem = page.locator(selector).first
+                if elem.count() > 0:
+                    author = elem.inner_text().strip()
+                    break
+            except Exception:
+                continue
+
+        return {'title': title, 'author': author}
+    except Exception as e:
+        logger.error(f"Failed lightweight scrape for {asin}: {e}")
+        return None
+
+
 def scrape_daily_deals(page, domain: str = 'amazon.com') -> List[str]:
     """Scrape ASINs from Amazon's daily Kindle deals page."""
     deals_url = f"https://www.{domain}/amz-books/book-deals?filters=v1%3AFORMAT%5Bkindle_edition%5D"
@@ -326,33 +366,35 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
             logger.debug(f"Skipping {asin} - already checked today")
             continue
 
-        # Scrape book info using the full scraper
-        book_info = scrape_book_info(page, asin, domain=domain, scraper=scraper)
-
-        if not book_info or book_info.get('already_owned'):
+        # Step 1: Lightweight scrape for match check only (avoids full scrape for non-matches)
+        light_info = scrape_book_title_author(page, asin, domain=domain)
+        if not light_info or not light_info.get('title'):
+            logger.warning(f"Could not scrape title/author for {asin}")
             if not dry_run:
                 db.add_deal_check(asin, was_deal=False, notified=False)
             continue
 
-        title = book_info.get('title')
-        author = book_info.get('author', '')
-        current_price = book_info.get('current_price')
-        list_price = book_info.get('list_price')
+        title = light_info.get('title')
+        author = light_info.get('author', '')
 
-        if not title:
-            logger.warning(f"Could not scrape info for {asin}")
-            if not dry_run:
-                db.add_deal_check(asin, was_deal=False, notified=False)
-            continue
-
-        # Check if it matches user's interests
+        # Step 2: Check for match BEFORE full scrape
         is_match, match_reason = matcher.is_match(asin, author, title)
-
         if not is_match:
             logger.debug(f"No match: {title}")
             if not dry_run:
                 db.add_deal_check(asin, was_deal=False, notified=False)
             continue
+
+        # Step 3: Only full-scrape books that actually matched
+        book_info = scrape_book_info(page, asin, domain=domain, scraper=scraper)
+        if not book_info or book_info.get('already_owned'):
+            if not dry_run:
+                db.add_deal_check(asin, was_deal=False, notified=False)
+            continue
+
+        current_price = book_info.get('current_price')
+        list_price = book_info.get('list_price')
+        cover_url = book_info.get('cover_url')
 
         # Check price
         if current_price is None or list_price is None:
@@ -383,7 +425,7 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
             'asin': asin,
             'title': title,
             'author': author,
-            'cover_url': book_info.get('cover_url'),
+            'cover_url': cover_url,
             'current_price': current_price,
             'list_price': list_price,
             'previous_price': previous_price,
@@ -411,10 +453,10 @@ async def _async_scrape_book_info(page, asin: str, domain: str = 'amazon.com') -
         # Check for CAPTCHA or login
         if await page.locator('input[name="email"]').count() > 0:
             logger.error(f"Hit login page for {asin} - session may have expired")
-            return None
+            return {'session_invalid': True}
         if await page.locator('form[action*="captcha"]').count() > 0:
             logger.error(f"Hit CAPTCHA for {asin} - may need to slow down")
-            return None
+            return {'session_invalid': True}
 
         # Check if already owned
         already_owned = False
@@ -446,7 +488,8 @@ async def _async_scrape_book_info(page, asin: str, domain: str = 'amazon.com') -
         # Extract author
         author = None
         for selector in ['.author .contributorNameID', '#bylineInfo .author a.contributorNameID',
-                         'span.author a', '#bylineInfo span.author', '.contributorNameTrigger']:
+                         'span.author a', '#bylineInfo span.author',
+                         'a[data-asin] .author', '.contributorNameTrigger']:
             try:
                 elem = page.locator(selector).first
                 if await elem.count() > 0:
@@ -458,7 +501,8 @@ async def _async_scrape_book_info(page, asin: str, domain: str = 'amazon.com') -
         # Extract cover
         cover_url = None
         for selector in ['#ebooksImgBlkFront', '#imgBlkFront', '#ebooksProductImage',
-                         '#landingImage', 'img.a-dynamic-image', '#main-image']:
+                         '#landingImage', 'img.a-dynamic-image', '#main-image',
+                         'img[data-a-dynamic-image]']:
             try:
                 elem = page.locator(selector).first
                 if await elem.count() > 0:
@@ -583,8 +627,14 @@ async def _async_scrape_recommendations(session_path: str, headless: bool,
                 except Exception:
                     pass
 
-        # Only save session state if at least one scrape succeeded
-        successful = sum(1 for _, info in results if info is not None)
+        # Only save session state if at least one scrape succeeded (not session_invalid)
+        successful = sum(
+            1 for _, info in results
+            if info is not None
+            and isinstance(info, dict)
+            and not info.get('session_invalid')
+            and not info.get('already_owned')
+        )
         if successful > 0:
             await context.storage_state(path=session_path)
         else:
@@ -650,6 +700,10 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
                 db.add_deal_check(asin, was_deal=False, notified=False)
             continue
 
+        if book_info.get('session_invalid'):
+            logger.warning(f"Session invalid during recommendation check for {asin} — skipping (will retry tomorrow)")
+            continue
+
         if book_info.get('already_owned'):
             if not dry_run:
                 db.add_deal_check(asin, was_deal=False, notified=False)
@@ -666,24 +720,18 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
                 db.add_deal_check(asin, was_deal=False, notified=False)
             continue
 
-        # Ensure book exists in DB (for price_history/notifications FK)
-        if not dry_run:
-            db.add_recommendation_book(asin, title, author, cover_url)
-
         # Check deal criteria
-        if not is_deal(current_price, list_price):
+        was_deal = is_deal(current_price, list_price)
+        previous_price = bulk_prev_prices.get(asin)
+        last_notified_price = bulk_last_notifs.get(asin)
+        notified_flag = False
+
+        if not was_deal:
             if not dry_run:
                 db.add_deal_check(asin, was_deal=False, notified=False)
             continue
 
         # Check notification rules (from bulk pre-fetch)
-        previous_price = bulk_prev_prices.get(asin)
-        if not dry_run:
-            db.add_price_history(asin, current_price, list_price)
-
-        last_notified_price = bulk_last_notifs.get(asin)
-
-        notified_flag = False
         if should_notify(current_price, list_price, last_notified_price):
             savings_percent = calculate_savings_percent(current_price, list_price)
             source_title = bulk_rec_sources.get(asin)
@@ -701,15 +749,17 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
                 'match_reason': match_reason
             })
 
-            if not dry_run:
-                db.add_notification(asin, current_price)
-
             notified_flag = True
             logger.info(f"Recommended deal: {title} - ${current_price:.2f} ({match_reason})")
 
+        # Wrap all per-ASIN writes in a single atomic batch
         if not dry_run:
-            was_deal = is_deal(current_price, list_price)
-            db.add_deal_check(asin, was_deal=was_deal, notified=notified_flag)
+            with db.batch_writes():
+                db.add_recommendation_book(asin, title, author, cover_url)
+                db.add_price_history(asin, current_price, list_price)
+                if notified_flag:
+                    db.add_notification(asin, current_price)
+                db.add_deal_check(asin, was_deal=True, notified=notified_flag)
 
     logger.info(f"Recommendation check complete: {len(scrape_results)} checked, {error_count} errors, {len(deals_found)} deals found")
     return deals_found
@@ -836,12 +886,6 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                         author = scraped_author or book['author']
                         cover_url = scraped_cover or book['cover_url']
 
-                        # Update metadata if we got any new data from scraping
-                        if scraped_title or scraped_author or scraped_cover:
-                            logger.debug(f"Updating metadata for {asin}")
-                            if not dry_run:
-                                db.update_book_metadata(asin, title, author, cover_url)
-
                         # Handle free books (price could be 0 or None)
                         if current_price is None:
                             logger.warning(f"Could not determine price for {title}")
@@ -854,14 +898,26 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                         # Get previous price before saving new price history (from bulk pre-fetch)
                         previous_price = bulk_prev_prices.get(asin)
 
-                        # Save price history
-                        if not dry_run:
-                            db.add_price_history(asin, current_price, list_price)
-
                         # Check if should notify (from bulk pre-fetch)
                         last_notified_price = bulk_last_notifs.get(asin)
+                        notify = should_notify(current_price, list_price, last_notified_price)
 
-                        if should_notify(current_price, list_price, last_notified_price):
+                        # Wrap all per-book writes in a single atomic batch
+                        if not dry_run:
+                            with db.batch_writes():
+                                # Update metadata if we got any new data from scraping
+                                if scraped_title or scraped_author or scraped_cover:
+                                    logger.debug(f"Updating metadata for {asin}")
+                                    db.update_book_metadata(asin, title, author, cover_url)
+                                db.add_price_history(asin, current_price, list_price)
+                                if notify:
+                                    db.add_notification(asin, current_price)
+                        else:
+                            # dry_run: still update metadata in-memory log but no DB writes
+                            if scraped_title or scraped_author or scraped_cover:
+                                logger.debug(f"Updating metadata for {asin}")
+
+                        if notify:
                             savings_percent = calculate_savings_percent(current_price, list_price)
 
                             deal = {
@@ -875,10 +931,6 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                                 'savings_percent': savings_percent
                             }
                             tracked_deals.append(deal)
-
-                            # Record notification
-                            if not dry_run:
-                                db.add_notification(asin, current_price)
 
                             # Log with proper formatting (handle free books)
                             if current_price == 0:

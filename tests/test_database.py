@@ -441,3 +441,23 @@ def test_get_bulk_recommendation_sources(clean_db):
 def test_ping_reconnect(clean_db):
     """Test ping_reconnect does not raise."""
     clean_db.ping_reconnect()  # Should not raise
+
+
+def test_batch_writes_commits_atomically(clean_db):
+    """batch_writes context manager should commit all writes together."""
+    clean_db.add_book(asin='B001', title='Book')
+    with clean_db.batch_writes():
+        clean_db.add_price_history('B001', 2.99, 14.99)
+        clean_db.add_notification('B001', 2.99)
+    assert clean_db.get_latest_price('B001') is not None
+    assert clean_db.get_last_notification('B001') is not None
+
+
+def test_batch_writes_rolls_back_on_error(clean_db):
+    """batch_writes should rollback if an error occurs mid-batch."""
+    clean_db.add_book(asin='B001', title='Book')
+    with pytest.raises(RuntimeError):
+        with clean_db.batch_writes():
+            clean_db.add_price_history('B001', 2.99, 14.99)
+            raise RuntimeError("simulated error")
+    assert clean_db.get_latest_price('B001') is None
