@@ -248,7 +248,8 @@ def scrape_book_info(page, asin: str, domain: str = 'amazon.com',
         return None
 
 
-def scrape_book_title_author(page, asin: str, domain: str = 'amazon.com') -> Optional[Dict[str, Any]]:
+def scrape_book_title_author(page, asin: str, domain: str = 'amazon.com',
+                             scraper=None) -> Optional[Dict[str, Any]]:
     """Lightweight scrape: only fetch title and author for Phase 2 match-gate filtering."""
     try:
         url = f"https://www.{domain}/dp/{asin}"
@@ -257,9 +258,13 @@ def scrape_book_title_author(page, asin: str, domain: str = 'amazon.com') -> Opt
         # Check for session issues
         if page.locator('input[name="email"]').count() > 0:
             logger.error(f"Hit login page for {asin}")
+            if scraper:
+                scraper.mark_session_invalid()
             return None
         if page.locator('form[action*="captcha"]').count() > 0:
             logger.error(f"Hit CAPTCHA for {asin}")
+            if scraper:
+                scraper.mark_session_invalid()
             return None
 
         title = None
@@ -367,11 +372,15 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
             continue
 
         # Step 1: Lightweight scrape for match check only (avoids full scrape for non-matches)
-        light_info = scrape_book_title_author(page, asin, domain=domain)
+        light_info = scrape_book_title_author(page, asin, domain=domain, scraper=scraper)
+        time.sleep(check_delay / 1000)  # Delay after every page load to avoid rate limiting
+
         if not light_info or not light_info.get('title'):
             logger.warning(f"Could not scrape title/author for {asin}")
             if not dry_run:
-                db.add_deal_check(asin, was_deal=False, notified=False)
+                with db.batch_writes():
+                    db.add_recommendation_book(asin)
+                    db.add_deal_check(asin, was_deal=False, notified=False)
             continue
 
         title = light_info.get('title')
@@ -382,31 +391,45 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
         if not is_match:
             logger.debug(f"No match: {title}")
             if not dry_run:
-                db.add_deal_check(asin, was_deal=False, notified=False)
+                with db.batch_writes():
+                    db.add_recommendation_book(asin, title, author)
+                    db.add_deal_check(asin, was_deal=False, notified=False)
             continue
 
         # Step 3: Only full-scrape books that actually matched
         book_info = scrape_book_info(page, asin, domain=domain, scraper=scraper)
+        time.sleep(check_delay / 1000)  # Delay after every full scrape
+
         if not book_info or book_info.get('already_owned'):
             if not dry_run:
-                db.add_deal_check(asin, was_deal=False, notified=False)
+                with db.batch_writes():
+                    db.add_recommendation_book(asin, title, author)
+                    db.add_deal_check(asin, was_deal=False, notified=False)
             continue
 
+        # Prefer richer data from full scrape over lightweight scrape
+        title = book_info.get('title') or title
+        author = book_info.get('author') or author
+        cover_url = book_info.get('cover_url')
         current_price = book_info.get('current_price')
         list_price = book_info.get('list_price')
-        cover_url = book_info.get('cover_url')
 
         # Check price
         if current_price is None or list_price is None:
             logger.debug(f"Skipping {title} - no price info")
             if not dry_run:
-                db.add_deal_check(asin, was_deal=False, notified=False)
+                with db.batch_writes():
+                    db.add_recommendation_book(asin, title, author, cover_url)
+                    db.add_deal_check(asin, was_deal=False, notified=False)
             continue
 
         if not is_deal(current_price, list_price):
             logger.info(f"Match but not a deal: {title} (${current_price})")
             if not dry_run:
-                db.add_deal_check(asin, was_deal=False, notified=False)
+                with db.batch_writes():
+                    db.add_recommendation_book(asin, title, author, cover_url)
+                    db.add_price_history(asin, current_price, list_price)
+                    db.add_deal_check(asin, was_deal=False, notified=False)
             continue
 
         # Check notification rules — do not re-notify at same/higher price
@@ -414,7 +437,10 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
         if not should_notify(current_price, list_price, last_notified_price):
             logger.debug(f"Skipping {title} - already notified at same/lower price (${last_notified_price})")
             if not dry_run:
-                db.add_deal_check(asin, was_deal=True, notified=False)
+                with db.batch_writes():
+                    db.add_recommendation_book(asin, title, author, cover_url)
+                    db.add_price_history(asin, current_price, list_price)
+                    db.add_deal_check(asin, was_deal=True, notified=False)
             continue
 
         savings_percent = calculate_savings_percent(current_price, list_price)
@@ -434,10 +460,11 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
         })
 
         if not dry_run:
-            db.add_notification(asin, current_price)
-            db.add_deal_check(asin, was_deal=True, notified=True)
-
-        time.sleep(check_delay / 1000)
+            with db.batch_writes():
+                db.add_recommendation_book(asin, title, author, cover_url)
+                db.add_price_history(asin, current_price, list_price)
+                db.add_notification(asin, current_price)
+                db.add_deal_check(asin, was_deal=True, notified=True)
 
     logger.info(f"Found {len(deals_found)} daily deal matches")
     return deals_found
@@ -589,19 +616,19 @@ async def _async_scrape_recommendations(session_path: str, headless: bool,
         async def scrape_one(asin: str):
             nonlocal checked_count
             page = await page_pool.get()
+            result = None
             try:
                 logger.debug(f"Scraping recommendation: {asin}")
                 result = await _async_scrape_book_info(page, asin, domain=domain)
-                await asyncio.sleep(check_delay / 1000)
                 checked_count += 1
                 if checked_count % 10 == 0:
                     logger.info(f"Progress: {checked_count}/{len(rec_asins)} recommendations checked")
-                return (asin, result)
             except Exception as e:
                 logger.error(f"Worker error for {asin}: {e}")
-                return (asin, None)
             finally:
                 await page_pool.put(page)
+            await asyncio.sleep(check_delay / 1000)
+            return (asin, result)
 
         pages = []
         try:
@@ -633,7 +660,6 @@ async def _async_scrape_recommendations(session_path: str, headless: bool,
             if info is not None
             and isinstance(info, dict)
             and not info.get('session_invalid')
-            and not info.get('already_owned')
         )
         if successful > 0:
             await context.storage_state(path=session_path)
@@ -1016,21 +1042,23 @@ def send_notification_for_recent_deals(config: Config, db: Database, hours: int 
 
     # Get recent notifications
     cursor = db.conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT n.asin, n.notified_price, n.notified_date,
-               b.title, b.author, b.cover_url,
-               ph.list_price
-        FROM notifications n
-        JOIN books b ON n.asin = b.asin
-        LEFT JOIN price_history ph ON n.asin = ph.asin
-            AND ph.check_date = (
-                SELECT MAX(check_date) FROM price_history WHERE asin = n.asin
-            )
-        WHERE n.notified_date >= DATE_SUB(NOW(), INTERVAL %s HOUR)
-        ORDER BY n.notified_date DESC
-    """, (hours,))
-
-    notifications = cursor.fetchall()
+    try:
+        cursor.execute("""
+            SELECT n.asin, n.notified_price, n.notified_date,
+                   b.title, b.author, b.cover_url,
+                   ph.list_price
+            FROM notifications n
+            JOIN books b ON n.asin = b.asin
+            LEFT JOIN price_history ph ON n.asin = ph.asin
+                AND ph.check_date = (
+                    SELECT MAX(check_date) FROM price_history WHERE asin = n.asin
+                )
+            WHERE n.notified_date >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+            ORDER BY n.notified_date DESC
+        """, (hours,))
+        notifications = cursor.fetchall()
+    finally:
+        cursor.close()
 
     if not notifications:
         logger.info(f"No deals found in the last {hours} hours")

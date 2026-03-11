@@ -264,7 +264,8 @@ class Database:
                 SET title = %s, author = %s, cover_url = %s
                 WHERE asin = %s
             """, (title, author, cover_url, asin))
-            self.conn.commit()
+            if not self._batch_mode:
+                self.conn.commit()
         finally:
             cursor.close()
 
@@ -608,15 +609,11 @@ class Database:
         cursor = self.conn.cursor()
         try:
             cursor.execute("""
-                INSERT INTO deal_checks (asin, check_date, was_deal, notified)
+                INSERT IGNORE INTO deal_checks (asin, check_date, was_deal, notified)
                 VALUES (%s, CURDATE(), %s, %s)
             """, (asin, 1 if was_deal else 0, 1 if notified else 0))
             if not self._batch_mode:
                 self.conn.commit()
-        except mysql.connector.IntegrityError:
-            # Already checked today - ignore
-            self.conn.rollback()
-            pass
         finally:
             cursor.close()
 
