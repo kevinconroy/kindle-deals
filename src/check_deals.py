@@ -754,6 +754,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                 skipped_count = 0
                 inactive_count = 0
 
+                # Bulk fetch already-checked ASINs for today (unless force mode)
+                already_checked = db.get_checked_today_asins(deal_day) if not force else set()
+
                 for book in books:
                     # Double-check that book is actually active (safety check)
                     if book['is_sample'] == 0 or book['is_deleted'] == 1:
@@ -762,7 +765,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                         continue
 
                     # Skip books already checked today (unless force flag)
-                    if not force and db.was_checked_today(book['asin'], deal_day):
+                    if not force and book['asin'] in already_checked:
                         logger.debug(f"Skipping {book['title'] or book['asin']} (already checked today)")
                         skipped_count += 1
                         continue
@@ -777,6 +780,11 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                     logger.info(f"Skipped {skipped_count} books already checked today (use --force to override)")
 
                 logger.info(f"Checking {len(books)} active books for deals...")
+
+                # Bulk pre-fetch previous prices and last notifications to avoid N+1 queries
+                candidate_asins = [b['asin'] for b in books]
+                bulk_prev_prices = db.get_bulk_previous_prices(candidate_asins)
+                bulk_last_notifs = db.get_bulk_last_notifications(candidate_asins)
 
                 for book in books:
                     asin = book['asin']
@@ -827,16 +835,15 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                         if list_price is None:
                             list_price = current_price
 
-                        # Get previous price before saving new price history
-                        previous_price = db.get_previous_price(asin)
+                        # Get previous price before saving new price history (from bulk pre-fetch)
+                        previous_price = bulk_prev_prices.get(asin)
 
                         # Save price history
                         if not dry_run:
                             db.add_price_history(asin, current_price, list_price)
 
-                        # Check if should notify
-                        last_notification = db.get_last_notification(asin)
-                        last_notified_price = float(last_notification['notified_price']) if last_notification and last_notification['notified_price'] is not None else None
+                        # Check if should notify (from bulk pre-fetch)
+                        last_notified_price = bulk_last_notifs.get(asin)
 
                         if should_notify(current_price, list_price, last_notified_price):
                             savings_percent = calculate_savings_percent(current_price, list_price)
