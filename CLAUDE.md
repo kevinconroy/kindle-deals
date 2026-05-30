@@ -101,6 +101,12 @@ python src/check_deals.py --skip-recommendations
 
 # Send test email notification
 python src/send_notification.py --test
+
+# List samples that have an owned copy (eligible for deletion)
+python src/cleanup_samples.py
+
+# List and automatically open cleanup URLs in browser tabs
+python src/cleanup_samples.py --open
 ```
 
 ### Cron Schedule

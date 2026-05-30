@@ -34,10 +34,24 @@ def get_current_deal_day() -> datetime:
     """
     try:
         from zoneinfo import ZoneInfo
+        now_eastern = datetime.now(ZoneInfo('America/New_York'))
     except ImportError:
-        from backports.zoneinfo import ZoneInfo  # Python 3.8 fallback
-
-    now_eastern = datetime.now(ZoneInfo('America/New_York'))
+        # Python < 3.9: approximate Eastern time using UTC with DST heuristic
+        # DST: second Sunday of March to first Sunday of November
+        import calendar
+        now_utc = datetime.utcnow()
+        year = now_utc.year
+        # Second Sunday of March
+        march_first_weekday = calendar.weekday(year, 3, 1)
+        dst_start_day = 1 + (6 - march_first_weekday) % 7 + 7
+        dst_start = datetime(year, 3, dst_start_day, 2, 0, 0)
+        # First Sunday of November
+        nov_first_weekday = calendar.weekday(year, 11, 1)
+        dst_end_day = 1 + (6 - nov_first_weekday) % 7
+        dst_end = datetime(year, 11, dst_end_day, 2, 0, 0)
+        is_dst = dst_start <= now_utc < dst_end
+        offset_hours = -4 if is_dst else -5
+        now_eastern = now_utc + timedelta(hours=offset_hours)
 
     if now_eastern.hour < 3:
         deal_day = now_eastern.date() - timedelta(days=1)
