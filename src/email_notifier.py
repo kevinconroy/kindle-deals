@@ -100,6 +100,13 @@ class EmailNotifier:
                 <div class="match-reason">{html_lib.escape(match_reason)}</div>
 """
 
+        # Auto-purchased badge
+        auto_purchased = book.get('auto_purchased')
+        if auto_purchased:
+            book_html += """
+                <div class="auto-purchased">Auto-purchased</div>
+"""
+
         # Format price display
         if current_price == 0:
             price_display = "FREE"
@@ -139,7 +146,7 @@ class EmailNotifier:
 
         book_html += f"""
                 </div>
-                <a href="{amazon_link}" class="buy-button">Buy now on Amazon</a>
+                <a href="{amazon_link}" class="buy-button">{'Read now' if auto_purchased else 'Buy now on Amazon'}</a>
             </div>
         </div>
     </div>
@@ -314,6 +321,16 @@ class EmailNotifier:
         .match-reason::before {{
             content: "\\2713  ";
             font-weight: bold;
+        }}
+        .auto-purchased {{
+            display: inline-block;
+            background-color: #067d62;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            margin: 6px 0;
         }}{css_extra}
     </style>
 </head>

@@ -229,3 +229,33 @@ def test_generate_email_html_backward_compatible():
     # No section headers in backward-compatible mode
     assert 'Tracked Deals' not in html
     assert 'Recommended Deals' not in html
+
+
+def test_auto_purchased_book_shows_badge_and_read_now():
+    books = [{
+        'asin': 'B0AUTO0001',
+        'title': 'Auto Bought Novel',
+        'author': 'A. Writer',
+        'cover_url': 'https://example.com/c.jpg',
+        'current_price': 3.99,
+        'list_price': 12.99,
+        'auto_purchased': True,
+        'points_applied': 3.99,
+    }]
+    html = EmailNotifier.generate_email_html(books)
+    assert 'Auto-purchased' in html
+    assert 'Read now' in html
+
+
+def test_non_purchased_book_has_no_badge():
+    books = [{
+        'asin': 'B0NORMAL01',
+        'title': 'Normal Deal',
+        'author': 'B. Writer',
+        'cover_url': '',
+        'current_price': 1.99,
+        'list_price': 9.99,
+    }]
+    html = EmailNotifier.generate_email_html(books)
+    assert 'Auto-purchased' not in html
+    assert 'Buy now on Amazon' in html
