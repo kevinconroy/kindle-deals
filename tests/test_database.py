@@ -25,6 +25,7 @@ def clean_db(db):
     # Clear all tables before each test
     cursor = db.conn.cursor()
     cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+    cursor.execute("TRUNCATE TABLE purchases")
     cursor.execute("TRUNCATE TABLE deal_checks")
     cursor.execute("TRUNCATE TABLE recommendations")
     cursor.execute("TRUNCATE TABLE notifications")
@@ -461,3 +462,24 @@ def test_batch_writes_rolls_back_on_error(clean_db):
             clean_db.add_price_history('B001', 2.99, 14.99)
             raise RuntimeError("simulated error")
     assert clean_db.get_latest_price('B001') is None
+
+
+def test_add_and_is_purchased(clean_db):
+    """add_purchase records a purchase and is_purchased detects it."""
+    clean_db.add_book('B0PURCHASE1', title='Bought Book')
+    assert clean_db.is_purchased('B0PURCHASE1') is False
+
+    clean_db.add_purchase('B0PURCHASE1', 3.99, points_applied=3.99)
+    assert clean_db.is_purchased('B0PURCHASE1') is True
+
+
+def test_add_purchase_is_idempotent(clean_db):
+    """add_purchase twice for the same asin does not error and stays single."""
+    clean_db.add_book('B0PURCHASE2', title='Bought Twice')
+    clean_db.add_purchase('B0PURCHASE2', 2.99, points_applied=2.99)
+    clean_db.add_purchase('B0PURCHASE2', 2.99, points_applied=2.99)
+
+    cursor = clean_db.conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM purchases WHERE asin = %s", ('B0PURCHASE2',))
+    assert cursor.fetchone()[0] == 1
+    cursor.close()

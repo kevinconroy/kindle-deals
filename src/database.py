@@ -179,6 +179,19 @@ class Database:
                 )
             """)
 
+            # Purchases table - records auto-purchased books for idempotency/audit
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS purchases (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    asin VARCHAR(20) NOT NULL,
+                    price DECIMAL(10,2) NOT NULL,
+                    points_applied DECIMAL(10,2),
+                    purchased_date DATETIME NOT NULL,
+                    UNIQUE KEY unique_purchase (asin),
+                    FOREIGN KEY (asin) REFERENCES books(asin)
+                )
+            """)
+
             # Migrate: add performance indexes (for existing databases)
             try:
                 cursor.execute("""
@@ -442,6 +455,36 @@ class Database:
             """, (asin,))
             result = cursor.fetchone()
             return result
+        finally:
+            cursor.close()
+
+    def add_purchase(self, asin: str, price: float,
+                     points_applied: float = None) -> None:
+        """
+        Record an auto-purchase. Idempotent: a second call for the same ASIN
+        is ignored (UNIQUE constraint on asin).
+
+        Args:
+            asin: Amazon Standard Identification Number
+            price: Price paid
+            points_applied: Dollar value of Rewards points applied (or None)
+        """
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT IGNORE INTO purchases (asin, price, points_applied, purchased_date)
+                VALUES (%s, %s, %s, %s)
+            """, (asin, price, points_applied, datetime.now()))
+            self.conn.commit()
+        finally:
+            cursor.close()
+
+    def is_purchased(self, asin: str) -> bool:
+        """Return True if this ASIN has already been auto-purchased."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT 1 FROM purchases WHERE asin = %s LIMIT 1", (asin,))
+            return cursor.fetchone() is not None
         finally:
             cursor.close()
 
