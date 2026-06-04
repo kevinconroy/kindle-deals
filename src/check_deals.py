@@ -16,6 +16,7 @@ from scraper import AmazonScraper
 from deal_logic import should_notify, is_deal
 from similarity_matcher import SimilarityMatcher
 from email_notifier import EmailNotifier
+import purchaser
 
 logging.basicConfig(
     level=logging.INFO,
@@ -829,6 +830,16 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
     check_delay = config.get('scraping.check_delay', 2000)
     amazon_domain = config.get('amazon.domain', 'amazon.com')
 
+    # Auto-purchase settings
+    ap_enabled = config.get('auto_purchase.enabled', False)
+    ap_max_price = config.get('auto_purchase.max_price', 5.00)
+    ap_require_full = config.get('auto_purchase.require_points_full_coverage', True)
+    ap_max_per_run = config.get('auto_purchase.max_purchases_per_run', 5)
+    action_delay = config.get('scraping.action_delay', 500)
+    screenshot_dir = os.path.dirname(session_path)
+    run_purchase_count = 0
+    purchased_asins = []
+
     # Get current deal day (considers 3 AM Eastern reset)
     deal_day = get_current_deal_day()
     logger.info(f"Deal day: {deal_day.date()} (deals reset at 3 AM Eastern)")
@@ -942,6 +953,42 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                         last_notified_price = bulk_last_notifs.get(asin)
                         notify = should_notify(current_price, list_price, last_notified_price)
 
+                        # Auto-purchase: tracked sample, qualifies as a deal, <= cap,
+                        # points fully cover, not already bought, under per-run cap.
+                        auto_purchased = False
+                        points_applied = None
+                        deal_qualifies = is_deal(current_price, list_price)
+                        if (ap_enabled and not dry_run and deal_qualifies
+                                and current_price is not None
+                                and current_price <= ap_max_price
+                                and run_purchase_count < ap_max_per_run
+                                and not db.is_purchased(asin)):
+                            result = purchaser.attempt_purchase(
+                                page, asin, current_price,
+                                require_full_coverage=ap_require_full,
+                                screenshot_dir=screenshot_dir,
+                                action_delay=action_delay / 1000
+                            )
+                            if result['success']:
+                                auto_purchased = True
+                                points_applied = result['points_applied']
+                                run_purchase_count += 1
+                                # Idempotency: record immediately (before email)
+                                db.add_purchase(asin, current_price, points_applied)
+                                purchased_asins.append(asin)
+                                logger.info(
+                                    f"AUTO-PURCHASED {title} - ${current_price:.2f} "
+                                    f"(points ${points_applied:.2f})"
+                                )
+                            else:
+                                logger.info(f"Auto-purchase skipped for {title}: {result['reason']}")
+                        elif (ap_enabled and dry_run and deal_qualifies
+                              and current_price is not None and current_price <= ap_max_price):
+                            logger.info(f"DRY RUN: would attempt auto-purchase {title} (${current_price:.2f})")
+
+                        # Record a notification if we're notifying OR we auto-purchased
+                        notify_record = notify or auto_purchased
+
                         # Wrap all per-book writes in a single atomic batch
                         if not dry_run:
                             with db.batch_writes():
@@ -950,14 +997,14 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                                     logger.debug(f"Updating metadata for {asin}")
                                     db.update_book_metadata(asin, title, author, cover_url)
                                 db.add_price_history(asin, current_price, list_price)
-                                if notify:
+                                if notify_record:
                                     db.add_notification(asin, current_price)
                         else:
                             # dry_run: still update metadata in-memory log but no DB writes
                             if scraped_title or scraped_author or scraped_cover:
                                 logger.debug(f"Updating metadata for {asin}")
 
-                        if notify:
+                        if notify_record:
                             savings_percent = calculate_savings_percent(current_price, list_price)
 
                             deal = {
@@ -968,7 +1015,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                                 'current_price': current_price,
                                 'list_price': list_price,
                                 'previous_price': previous_price,
-                                'savings_percent': savings_percent
+                                'savings_percent': savings_percent,
+                                'auto_purchased': auto_purchased,
+                                'points_applied': points_applied
                             }
                             tracked_deals.append(deal)
 
@@ -1031,6 +1080,12 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
             logger.info(f"  [Recommended] {deal['title']} (${deal['current_price']:.2f})")
     else:
         logger.info("No deals found")
+
+    # After the email: stop tracking books we just bought (now owned)
+    for asin in purchased_asins:
+        db.mark_book_deleted(asin)
+    if purchased_asins:
+        logger.info(f"Marked {len(purchased_asins)} auto-purchased book(s) as owned/untracked")
 
     # Report samples that have owned copies (eligible for cleanup)
     cleanup_books = db.get_samples_with_owned_copies()
