@@ -27,6 +27,12 @@ deals:
   notification_cooldown_days: 30
   recommendation_concurrency: 3  # number of parallel browser tabs for recommendation checking
 
+auto_purchase:
+  enabled: true                       # auto-buy eligible samples with 1-Click
+  max_price: 5.00                     # only auto-buy at or below this price
+  require_points_full_coverage: true  # only buy when Rewards points cover the whole price
+  max_purchases_per_run: 5            # safety cap on purchases per run
+
 scraping:
   headless: true
   page_load_timeout: 30000

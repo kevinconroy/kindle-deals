@@ -120,11 +120,11 @@ python src/cleanup_samples.py --open
 
 ### Core Modules
 
-The application consists of five main modules:
+The application consists of these main modules:
 
 1. **database.py** - MySQL database interface
    - Uses mysql-connector-python for MySQL connections
-   - Manages five tables: books, price_history, notifications, recommendations, deal_checks
+   - Manages six tables: books, price_history, notifications, recommendations, deal_checks, purchases
    - Auto-creates database and tables on initialization
    - Provides methods for adding/retrieving books, prices, notifications, and recommendations
 
@@ -158,6 +158,12 @@ The application consists of five main modules:
    - Caches data in memory for fast lookups
    - Used by daily deals checker
 
+7. **purchaser.py** - Auto-purchase via 1-Click
+   - Buys eligible tracked samples (≤ configurable `max_price`) when Amazon Rewards points fully cover the price
+   - Ticks the points checkbox (`#balance-checkbox-0`) and clicks "Buy now with 1-Click" (`#one-click-button`)
+   - Confirms the order before recording it; never touches the adjacent audiobook checkbox
+   - 1-Click is instant (no review page); writes before/after screenshots to the session dir
+
 ### Scripts
 
 **Main Workflow:**
@@ -177,7 +183,7 @@ The application consists of five main modules:
    - `--force` disables early stopping and enables removal tracking
    - `--skip-collections` skips collection management
 2. **check_deals.py** - Checks book prices, daily deals, and recommended books via web scraping, sends notifications
-   - Phase 1: Sample book price checks
+   - Phase 1: Sample book price checks (also auto-purchases eligible samples — see `auto_purchase` config — paying with Rewards points and flagging them as "Auto-purchased" in the email)
    - Phase 2: Daily deals matching (by author, series, or recommendation)
    - Phase 3: Parallel recommendation price checking using ThreadPoolExecutor with configurable concurrency
    - Supports `--skip-samples`, `--skip-daily`, and `--skip-recommendations` flags for granular control
@@ -185,7 +191,7 @@ The application consists of five main modules:
 
 ## Database Schema
 
-The application uses MySQL with five tables:
+The application uses MySQL with six tables:
 
 ### books table
 ```sql
@@ -255,6 +261,21 @@ CREATE TABLE deal_checks (
 
 Note: Tracks which daily deals have been checked to prevent duplicate processing on the same day.
 
+### purchases table
+```sql
+CREATE TABLE purchases (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asin VARCHAR(20) NOT NULL,
+    price DECIMAL(10,2) NOT NULL,
+    points_applied DECIMAL(10,2),
+    purchased_date DATETIME NOT NULL,
+    UNIQUE KEY unique_purchase (asin),
+    FOREIGN KEY (asin) REFERENCES books(asin)
+)
+```
+
+Note: Records books auto-purchased via 1-Click with Rewards points. Written immediately on a confirmed purchase (idempotency via UNIQUE asin; `is_purchased()` guards against re-buying); the book is marked `is_deleted=1` after the email is sent.
+
 ## Deal Logic
 
 ### Deal Criteria
@@ -311,6 +332,12 @@ Configuration is stored in `config.yaml` (created from `config.yaml.example`).
 - `min_discount_percent`: Minimum discount percentage (default: 50)
 - `notification_cooldown_days`: Days before re-notifying about same book
 - `recommendation_concurrency`: Number of parallel browser tabs for recommendation checking (default: 3)
+
+**auto_purchase** - Auto-purchase settings (Phase 1)
+- `enabled`: Auto-buy eligible tracked samples with 1-Click (default: false if section absent)
+- `max_price`: Only auto-buy at or below this price (default: 5.00)
+- `require_points_full_coverage`: Only buy when Rewards points cover the whole price (default: true)
+- `max_purchases_per_run`: Safety cap on purchases per run (default: 5)
 
 **scraping** - Playwright browser settings
 - `headless`: Run browser in headless mode
