@@ -957,6 +957,8 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                         # points fully cover, not already bought, under per-run cap.
                         auto_purchased = False
                         points_applied = None
+                        needs_manual_purchase = False
+                        manual_reason = None
                         deal_qualifies = is_deal(current_price, list_price)
                         if (ap_enabled and not dry_run and deal_qualifies
                                 and current_price is not None
@@ -981,13 +983,20 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                                     f"(points ${points_applied:.2f})"
                                 )
                             else:
-                                logger.info(f"Auto-purchase skipped for {title}: {result['reason']}")
+                                # We did NOT buy (never spend cash without confirmation).
+                                # Surface it so the user can decide to buy manually.
+                                needs_manual_purchase = True
+                                manual_reason = result['reason']
+                                logger.warning(
+                                    f"Did NOT auto-purchase {title} (${current_price:.2f}): "
+                                    f"{result['reason']}. Flagged for manual confirmation."
+                                )
                         elif (ap_enabled and dry_run and deal_qualifies
                               and current_price is not None and current_price <= ap_max_price):
                             logger.info(f"DRY RUN: would attempt auto-purchase {title} (${current_price:.2f})")
 
-                        # Record a notification if we're notifying OR we auto-purchased
-                        notify_record = notify or auto_purchased
+                        # Notify if we're notifying, auto-purchased, or it needs manual action
+                        notify_record = notify or auto_purchased or needs_manual_purchase
 
                         # Wrap all per-book writes in a single atomic batch
                         if not dry_run:
@@ -1017,7 +1026,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                                 'previous_price': previous_price,
                                 'savings_percent': savings_percent,
                                 'auto_purchased': auto_purchased,
-                                'points_applied': points_applied
+                                'points_applied': points_applied,
+                                'needs_manual_purchase': needs_manual_purchase,
+                                'manual_reason': manual_reason
                             }
                             tracked_deals.append(deal)
 

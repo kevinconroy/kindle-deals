@@ -161,6 +161,7 @@ The application consists of these main modules:
 7. **purchaser.py** - Auto-purchase via 1-Click
    - Buys eligible tracked samples (≤ configurable `max_price`) when Amazon Rewards points fully cover the price
    - Ticks the points checkbox (`#balance-checkbox-0`) and clicks "Buy now with 1-Click" (`#one-click-button`)
+   - SAFETY: before clicking buy, waits for and re-verifies `payment.applicableBalances[0]=ExternalPoints` in the buyOneClick form (the real order payload — the checkbox itself has no name and its handler injects this field ~0.5s after ticking). If points are not confirmed on the order, it ABORTS without buying so we never spend cash.
    - Confirms the order before recording it; never touches the adjacent audiobook checkbox
    - 1-Click is instant (no review page); writes before/after screenshots to the session dir
 

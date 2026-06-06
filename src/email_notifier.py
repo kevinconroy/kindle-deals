@@ -107,6 +107,13 @@ class EmailNotifier:
                 <div class="auto-purchased">Auto-purchased</div>
 """
 
+        # Manual-purchase warning: eligible deal we did NOT auto-buy because
+        # points could not be applied (we never spend cash without confirmation)
+        if book.get('needs_manual_purchase'):
+            book_html += """
+                <div class="needs-manual">&#9888; Manual purchase needed &mdash; points not applied</div>
+"""
+
         # Format price display
         if current_price == 0:
             price_display = "FREE"
@@ -325,6 +332,16 @@ class EmailNotifier:
         .auto-purchased {{
             display: inline-block;
             background-color: #067d62;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            margin: 6px 0;
+        }}
+        .needs-manual {{
+            display: inline-block;
+            background-color: #b12704;
             color: white;
             padding: 3px 8px;
             border-radius: 3px;

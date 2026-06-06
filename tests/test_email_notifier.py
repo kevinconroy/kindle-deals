@@ -259,3 +259,19 @@ def test_non_purchased_book_has_no_badge():
     html = EmailNotifier.generate_email_html(books)
     assert 'Auto-purchased' not in html
     assert 'Buy now on Amazon' in html
+
+
+def test_needs_manual_purchase_shows_warning():
+    books = [{
+        'asin': 'B0MANUAL01',
+        'title': 'Could Not Use Points',
+        'author': 'C. Writer',
+        'cover_url': '',
+        'current_price': 2.99,
+        'list_price': 9.99,
+        'needs_manual_purchase': True,
+        'manual_reason': 'points not applied to order',
+    }]
+    html = EmailNotifier.generate_email_html(books)
+    assert 'Manual purchase needed' in html
+    assert 'Buy now on Amazon' in html  # not auto-bought, so still a buy link
