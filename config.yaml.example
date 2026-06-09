@@ -30,6 +30,7 @@ deals:
 auto_purchase:
   enabled: true                       # auto-buy eligible samples with 1-Click
   max_price: 5.00                     # only auto-buy at or below this price
+  max_points: 500                     # HARD cap on points actually spent per book (500 = $5.00)
   require_points_full_coverage: true  # only buy when Rewards points cover the whole price
   max_purchases_per_run: 5            # safety cap on purchases per run
 

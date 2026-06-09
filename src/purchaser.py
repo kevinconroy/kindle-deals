@@ -141,12 +141,20 @@ def attempt_purchase(page, asin: str, current_price: float,
                      require_full_coverage: bool = True,
                      screenshot_dir: Optional[str] = None,
                      action_delay: float = 0.5,
-                     points_confirm_timeout: float = 6.0) -> Dict[str, Any]:
+                     points_confirm_timeout: float = 6.0,
+                     max_points: int = 500,
+                     price_tolerance: float = 0.01) -> Dict[str, Any]:
     """Attempt to buy `asin` with 1-Click, applying Rewards points.
 
-    SAFETY: never clicks buy unless points are positively confirmed to be
-    attached to the order (`points_applied_to_order`). If that confirmation
-    cannot be obtained, the purchase is aborted so we never spend real cash.
+    SAFETY (do not weaken — these prevent spending real money):
+    1. The points-label amount is the AUTHORITATIVE charge (= min(balance, price)
+       shown as "Use $X.XX (N points)"). We trust it over `current_price`, which
+       is scraped and can be wrong (e.g. a carousel price from another product).
+    2. Hard cap: never spend more than `max_points` points (e.g. 500 = $5.00).
+    3. The real charge must match the scraped `current_price` within
+       `price_tolerance`. A mismatch means the book is not actually on sale (our
+       price was wrong) or points do not fully cover it — abort either way.
+    4. Never click buy unless points are confirmed attached to the order.
 
     Returns {"success": bool, "points_applied": float|None, "reason": str}.
     Only returns success after a confirmed order.
@@ -160,9 +168,21 @@ def attempt_purchase(page, asin: str, current_price: float,
         return {"success": False, "points_applied": None,
                 "reason": "could not parse points amount"}
 
-    if require_full_coverage and amount + 1e-9 < current_price:
+    # The points label is the real charge. Cap the actual points spent.
+    points_to_spend = int(round(amount * 100))
+    if points_to_spend > max_points:
         return {"success": False, "points_applied": None,
-                "reason": f"points ${amount:.2f} do not cover ${current_price:.2f}"}
+                "reason": (f"order would spend {points_to_spend} points (${amount:.2f}), "
+                           f"over the {max_points}-point cap — not buying")}
+
+    # The real charge must equal the price we judged as on-sale. If it does not,
+    # the scraped price was wrong (book not actually on sale) or points only
+    # partially cover it. Either way, do not buy.
+    if require_full_coverage and abs(amount - current_price) > price_tolerance:
+        return {"success": False, "points_applied": None,
+                "reason": (f"order charges ${amount:.2f} but on-sale price was "
+                           f"${current_price:.2f} — not actually on sale / points "
+                           f"don't fully cover; skipping")}
 
     _save_screenshot(page, screenshot_dir, f"{asin}-before")
 

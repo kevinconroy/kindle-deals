@@ -161,7 +161,7 @@ The application consists of these main modules:
 7. **purchaser.py** - Auto-purchase via 1-Click
    - Buys eligible tracked samples (≤ configurable `max_price`) when Amazon Rewards points fully cover the price
    - Ticks the points checkbox (`#balance-checkbox-0`) and clicks "Buy now with 1-Click" (`#one-click-button`)
-   - SAFETY: before clicking buy, waits for and re-verifies `payment.applicableBalances[0]=ExternalPoints` in the buyOneClick form (the real order payload — the checkbox itself has no name and its handler injects this field ~0.5s after ticking). If points are not confirmed on the order, it ABORTS without buying so we never spend cash.
+   - SAFETY: treats the points-label amount ("Use $X.XX (N points)") as the authoritative charge, not the scraped price. Aborts (never buys) if the charge exceeds `max_points`, if the charge doesn't match the scraped on-sale price within a cent (wrong price / not actually on sale / partial coverage), or if `payment.applicableBalances[0]=ExternalPoints` is not confirmed in the buyOneClick form before clicking. The checkbox has no name/value; its handler injects that field ~0.5s after ticking, so the code waits for and re-verifies it.
    - Confirms the order before recording it; never touches the adjacent audiobook checkbox
    - 1-Click is instant (no review page); writes before/after screenshots to the session dir
 
@@ -336,8 +336,9 @@ Configuration is stored in `config.yaml` (created from `config.yaml.example`).
 
 **auto_purchase** - Auto-purchase settings (Phase 1)
 - `enabled`: Auto-buy eligible tracked samples with 1-Click (default: false if section absent)
-- `max_price`: Only auto-buy at or below this price (default: 5.00)
-- `require_points_full_coverage`: Only buy when Rewards points cover the whole price (default: true)
+- `max_price`: Only auto-buy at or below this scraped price (default: 5.00)
+- `max_points`: HARD cap on points actually spent per book, based on the real order charge from the points label, not the scraped price (default: 500 = $5.00)
+- `require_points_full_coverage`: Only buy when the real charge equals the on-sale price within a cent — guards against wrong scraped prices and partial coverage (default: true)
 - `max_purchases_per_run`: Safety cap on purchases per run (default: 5)
 
 **scraping** - Playwright browser settings

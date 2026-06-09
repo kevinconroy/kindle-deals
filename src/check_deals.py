@@ -203,15 +203,22 @@ def scrape_book_info(page, asin: str, domain: str = 'amazon.com',
             except Exception:
                 pass
 
-            # Fall back to standard price selectors
+            # Fall back to standard price selectors. ORDER MATTERS: prefer
+            # Kindle-specific and buy-box-scoped selectors. Page-wide generic
+            # selectors (e.g. '.a-price .a-offscreen') are intentionally NOT used
+            # because they match prices from carousels/related products and have
+            # caused wrong (low) prices -> false deals and bad purchases.
             if current_price is None:
                 price_selectors = [
-                    '.ebook-price-value',
-                    'span.a-price .a-offscreen',
-                    '.kindle-price .a-color-price',
                     '#kindle-price',
+                    '#tmm-grid-swatch-KINDLE .a-color-price',
+                    '.swatchElement.selected .a-color-price',
+                    '.kindle-price .a-color-price',
+                    '.ebook-price-value',
                     '#price',
-                    '.a-price .a-offscreen'
+                    '#corePrice_feature_div .a-price .a-offscreen',
+                    '#buybox .a-price .a-offscreen',
+                    '#rightCol .a-price .a-offscreen',
                 ]
                 for selector in price_selectors:
                     try:
@@ -566,9 +573,13 @@ async def _async_scrape_book_info(page, asin: str, domain: str = 'amazon.com') -
             pass
 
         if current_price is None:
-            for selector in ['.ebook-price-value', 'span.a-price .a-offscreen',
-                             '.kindle-price .a-color-price', '#kindle-price', '#price',
-                             '.a-price .a-offscreen']:
+            # Kindle-specific / buy-box-scoped selectors only — NOT page-wide
+            # generic price selectors (they match carousel/related-product prices).
+            for selector in ['#kindle-price', '#tmm-grid-swatch-KINDLE .a-color-price',
+                             '.swatchElement.selected .a-color-price',
+                             '.kindle-price .a-color-price', '.ebook-price-value', '#price',
+                             '#corePrice_feature_div .a-price .a-offscreen',
+                             '#buybox .a-price .a-offscreen', '#rightCol .a-price .a-offscreen']:
                 try:
                     elem = page.locator(selector).first
                     if await elem.count() > 0:
@@ -835,6 +846,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
     ap_max_price = config.get('auto_purchase.max_price', 5.00)
     ap_require_full = config.get('auto_purchase.require_points_full_coverage', True)
     ap_max_per_run = config.get('auto_purchase.max_purchases_per_run', 5)
+    ap_max_points = config.get('auto_purchase.max_points', 500)
     action_delay = config.get('scraping.action_delay', 500)
     screenshot_dir = os.path.dirname(session_path)
     run_purchase_count = 0
@@ -969,7 +981,8 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                                 page, asin, current_price,
                                 require_full_coverage=ap_require_full,
                                 screenshot_dir=screenshot_dir,
-                                action_delay=action_delay / 1000
+                                action_delay=action_delay / 1000,
+                                max_points=ap_max_points
                             )
                             if result['success']:
                                 auto_purchased = True

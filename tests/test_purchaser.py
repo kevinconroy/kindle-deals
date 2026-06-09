@@ -65,13 +65,46 @@ def test_attempt_purchase_aborts_when_points_not_applied_to_order(monkeypatch):
     assert bought["clicked"] is False  # critically, never clicked buy
 
 
+def test_attempt_purchase_aborts_over_points_cap(monkeypatch):
+    """Real charge (points label) exceeds the points cap -> MUST NOT buy.
+    Regression for B009TCU58C: scraped $2.99 but order charged 999 points."""
+    bought = {"clicked": False}
+    _patch(monkeypatch, label="Use $9.99 (999 points) of Amazon Rewards Visa Card points",
+           box_ok=True, confirmed=True, points_applied=True)
+    monkeypatch.setattr(purchaser, 'click_buy_now',
+                        lambda page: bought.__setitem__("clicked", True))
+    result = purchaser.attempt_purchase(_DummyPage(), 'B009TCU58C', 2.99,
+                                        action_delay=0, points_confirm_timeout=0,
+                                        max_points=500)
+    assert result['success'] is False
+    assert 'cap' in result['reason'].lower()
+    assert bought["clicked"] is False
+
+
+def test_attempt_purchase_aborts_on_price_mismatch(monkeypatch):
+    """Real charge != scraped on-sale price -> book not actually on sale, MUST NOT buy.
+    Regression for the carousel-price scrape bug."""
+    bought = {"clicked": False}
+    _patch(monkeypatch, label="Use $3.50 (350 points) of Amazon Rewards Visa Card points",
+           box_ok=True, confirmed=True, points_applied=True)
+    monkeypatch.setattr(purchaser, 'click_buy_now',
+                        lambda page: bought.__setitem__("clicked", True))
+    result = purchaser.attempt_purchase(_DummyPage(), 'B0X', 2.99,
+                                        action_delay=0, points_confirm_timeout=0,
+                                        max_points=500)
+    assert result['success'] is False
+    assert 'sale' in result['reason'].lower()
+    assert bought["clicked"] is False
+
+
 def test_attempt_purchase_success(monkeypatch):
     _patch(monkeypatch, label="Use $4.99 (499 points) of Amazon Rewards Visa Card points",
            box_ok=True, confirmed=True, points_applied=True)
     result = purchaser.attempt_purchase(_DummyPage(), 'B0X', 4.99,
                                         require_full_coverage=True, action_delay=0,
-                                        points_confirm_timeout=0)
+                                        points_confirm_timeout=0, max_points=500)
     assert result['success'] is True
+    assert result['points_applied'] == 4.99
     assert result['points_applied'] == 4.99
 
 
