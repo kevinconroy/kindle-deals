@@ -43,5 +43,6 @@ scraping:
   action_delay: 500
 
 sync:
+  headless: false                    # run the sync with a visible browser; the digital console refuses headless far more often
   collection_name: "Read Me 2026"    # Collection to auto-add uncollected samples to
   early_stop_threshold: 10           # Stop after this many consecutive known ASINs

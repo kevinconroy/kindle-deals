@@ -55,6 +55,29 @@ def wait_for_library(page, timeout_seconds: int = 300,
         waited += poll_interval
 
 
+def resolve_headless(config, headless_override: bool = None) -> bool:
+    """
+    Decide whether the library sync runs headless.
+
+    Amazon's digital console refuses headless far more often than headed: every
+    headless cron sync from 2026-08-23 to 2026-09-13 hit the password page, while
+    headed runs went straight through. `sync.headless` therefore overrides the
+    shared `scraping.headless` (which check_deals still uses headless, since the
+    product pages it scrapes have no such problem).
+
+    Precedence: explicit --headless flag, then sync.headless, then
+    scraping.headless, then True.
+    """
+    if headless_override is not None:
+        return headless_override
+
+    sync_headless = config.get('sync.headless')
+    if sync_headless is not None:
+        return sync_headless
+
+    return config.get('scraping.headless', True)
+
+
 def scrape_recommendations(page, asin: str, domain: str = 'amazon.com',
                            scraper=None) -> List[str]:
     """
@@ -227,11 +250,7 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
     session_path = os.path.expanduser(config.get('storage.browser_session_path'))
     os.makedirs(os.path.dirname(session_path), exist_ok=True)
 
-    # Use override if provided, otherwise use config
-    if headless_override is not None:
-        headless = headless_override
-    else:
-        headless = config.get('scraping.headless', True)
+    headless = resolve_headless(config, headless_override)
 
     page_timeout = config.get('scraping.page_timeout', 30) * 1000
     amazon_domain = config.get('amazon.domain', 'amazon.com')

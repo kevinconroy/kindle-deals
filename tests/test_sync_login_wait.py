@@ -53,3 +53,36 @@ def test_wait_for_library_returns_immediately_when_already_logged_in():
 
     assert sync_library.wait_for_library(page, timeout_seconds=60, poll_interval=1) == 12
     assert page.slept == 0  # no waiting when the library is already there
+
+
+class _FakeConfig:
+    def __init__(self, values):
+        self._values = values
+
+    def get(self, key, default=None):
+        return self._values.get(key, default)
+
+
+def test_resolve_headless_prefers_sync_specific_setting():
+    """sync.headless lets the library sync run headed while check_deals stays
+    headless — the digital console refuses headless far more often."""
+    config = _FakeConfig({'sync.headless': False, 'scraping.headless': True})
+
+    assert sync_library.resolve_headless(config) is False
+
+
+def test_resolve_headless_falls_back_to_scraping_setting():
+    config = _FakeConfig({'scraping.headless': True})
+
+    assert sync_library.resolve_headless(config) is True
+
+
+def test_resolve_headless_explicit_override_wins():
+    config = _FakeConfig({'sync.headless': False, 'scraping.headless': False})
+
+    assert sync_library.resolve_headless(config, headless_override=True) is True
+    assert sync_library.resolve_headless(config, headless_override=False) is False
+
+
+def test_resolve_headless_defaults_to_headless_when_unset():
+    assert sync_library.resolve_headless(_FakeConfig({})) is True

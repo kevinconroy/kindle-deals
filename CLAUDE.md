@@ -123,10 +123,17 @@ bounces the digital console (`/hz/mycd/digital-console/...`) to `/ap/signin` wit
 from 2026-08-23 through 2026-09-13 failed this way, and the last successful sample sync
 before 2026-09-13 was 2026-06-26.
 
-The exact trigger is **not** pinned down: it is not headless-vs-headed (after a
-successful sync on 2026-09-13, the console loaded fine in both modes on the same session
-file). A successful console visit appears to refresh the auth, so syncing more often may
-keep it fresh — worth trying before assuming a manual sync is always required.
+**Headless appears to be the main trigger.** Across 2026-09-13, headed runs succeeded
+2/2 while headless failed 6/7 (including every weekly cron sync from 2026-08-23). It is
+not fully deterministic — one headless probe did succeed — so treat it as strongly
+indicated rather than proven. `sync.headless: false` therefore runs the library sync with
+a visible browser; `check_deals.py` still uses `scraping.headless: true`, since the
+product pages it scrapes have never shown this problem.
+
+**macOS caveat:** a cron job may not have access to the GUI session, so a headed browser
+launched from cron can fail to open. If the weekly sync still fails after this change,
+move it to a LaunchAgent (`~/Library/LaunchAgents`), which runs inside the user's login
+session.
 
 `check_deals.py` is unaffected — the product and book-deals pages it uses work from the
 saved session indefinitely.
@@ -393,6 +400,9 @@ Configuration is stored in `config.yaml` (created from `config.yaml.example`).
 - `action_delay`: Delay between page actions
 
 **sync** - Library sync settings
+- `headless`: Run the library sync headless (default: falls back to `scraping.headless`).
+  Set to `false` — the digital console refuses headless sessions far more often. Overridden
+  by the `--headless` flag; `--login` always forces a visible browser.
 - `collection_name`: Collection to auto-add uncollected samples to (default: "Read Me 2026")
 - `early_stop_threshold`: Stop after this many consecutive known ASINs (default: 10)
 
