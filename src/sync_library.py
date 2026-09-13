@@ -27,6 +27,34 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+LIBRARY_CHECKBOX_SELECTOR = 'input[type="checkbox"][id*=":Kindle"]'
+
+
+def wait_for_library(page, timeout_seconds: int = 300,
+                     poll_interval: int = 3) -> int:
+    """
+    Poll until the library page shows books, or the timeout expires.
+
+    Amazon intermittently bounces the digital console to /ap/signin with
+    openid.pape.max_auth_age=3600, demanding a recent password entry; every weekly
+    cron sync from 2026-08-23 to 2026-09-13 hit that page. Rather than block on a
+    terminal keypress — impossible when the script is not driven from a TTY — watch
+    the page itself and continue the moment the library renders, whether that is
+    immediately or after the user signs in.
+
+    Returns the number of book checkboxes found (0 if the timeout expired).
+    """
+    waited = 0
+    while True:
+        count = page.locator(LIBRARY_CHECKBOX_SELECTOR).count()
+        if count > 0:
+            return count
+        if waited >= timeout_seconds:
+            return 0
+        page.wait_for_timeout(poll_interval * 1000)
+        waited += poll_interval
+
+
 def scrape_recommendations(page, asin: str, domain: str = 'amazon.com',
                            scraper=None) -> List[str]:
     """
@@ -193,7 +221,8 @@ def add_samples_to_collection(page, items: list, collection_name: str, dry_run: 
 
 def sync_library(config: Config, db: Database, dry_run: bool = False,
                  login_mode: bool = False, headless_override: bool = None,
-                 force: bool = False, skip_collections: bool = False):
+                 force: bool = False, skip_collections: bool = False,
+                 login_timeout: int = 600):
     """Sync Kindle library from Amazon My Books page"""
     session_path = os.path.expanduser(config.get('storage.browser_session_path'))
     os.makedirs(os.path.dirname(session_path), exist_ok=True)
@@ -226,18 +255,25 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
                                  or page.locator('h1:has-text("Sign")').count() > 0)
 
                 if is_login_page and login_mode:
-                    # Login mode: wait for user to log in, then retry
+                    # Login mode: wait for the user to sign in in the browser window.
+                    # No keypress required — we watch for the library to render, so
+                    # this works even when the script is not attached to a terminal.
                     print("\n" + "=" * 70)
                     print("  Please log in to your Amazon account in the browser window")
                     print("=" * 70)
-                    print("\nOnce you're logged in, press Enter to continue...")
-                    input()
+                    print("\nWaiting for the library to load (no keypress needed)...")
+                    logger.info("Waiting up to %d minutes for Amazon login...",
+                                login_timeout // 60)
 
-                    logger.info("Login complete, navigating to library...")
-                    page.goto(f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber=1")
-                    page.wait_for_load_state('domcontentloaded')
-                    page.wait_for_timeout(2000)
-                    book_divs_count = page.locator('input[type="checkbox"][id*=":Kindle"]').count()
+                    book_divs_count = wait_for_library(page, timeout_seconds=login_timeout)
+
+                    if book_divs_count == 0:
+                        # Maybe signed in but left on another page — try the library once more.
+                        logger.info("Re-checking library page...")
+                        page.goto(f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc?pageNumber=1")
+                        page.wait_for_load_state('domcontentloaded')
+                        page.wait_for_timeout(2000)
+                        book_divs_count = page.locator(LIBRARY_CHECKBOX_SELECTOR).count()
 
                     if book_divs_count == 0:
                         screenshot_path = os.path.expanduser("~/.kindle-deals/empty-page.png")
@@ -540,6 +576,8 @@ def main():
     parser.add_argument('--dry-run', action='store_true', help='Dry run mode')
     parser.add_argument('--verbose', action='store_true', help='Verbose output')
     parser.add_argument('--login', action='store_true', help='Login mode')
+    parser.add_argument('--login-timeout', type=int, default=600,
+                        help='Seconds to wait for you to sign in during --login (default 600)')
     parser.add_argument('--force', action='store_true',
                         help='Force full sync — disable early stopping, enable removal tracking')
     parser.add_argument('--skip-collections', action='store_true',
@@ -570,7 +608,8 @@ def main():
                      login_mode=args.login,
                      headless_override=headless_override,
                      force=args.force,
-                     skip_collections=args.skip_collections)
+                     skip_collections=args.skip_collections,
+                     login_timeout=args.login_timeout)
         db.close()
         sys.exit(0)
 

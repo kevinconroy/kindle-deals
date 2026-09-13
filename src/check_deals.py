@@ -13,7 +13,7 @@ from urllib.parse import quote
 from config import Config
 from database import Database
 from scraper import AmazonScraper
-from deal_logic import should_notify, is_deal
+from deal_logic import should_notify, is_deal, rank_deals_for_email
 from similarity_matcher import SimilarityMatcher
 from email_notifier import EmailNotifier
 import purchaser
@@ -337,29 +337,60 @@ def scrape_daily_deals(page, domain: str = 'amazon.com') -> List[str]:
 
     asins = []
     try:
-        products = page.locator('[data-asin]').all()
-        logger.info(f"Found {len(products)} products on deals page")
-        for product in products:
+        # The deals page renders books as product links; it carries no
+        # data-asin attributes, so pull the ASIN out of the /dp/ URL.
+        links = page.locator('a[href*="/dp/"]').all()
+        logger.info(f"Found {len(links)} product links on deals page")
+        for link in links:
             try:
-                asin = product.get_attribute('data-asin')
-                if asin and len(asin) == 10:
-                    asins.append(asin)
+                href = link.get_attribute('href')
+                if not href:
+                    continue
+                match = re.search(r'/dp/([A-Z0-9]{10})', href)
+                if match:
+                    asins.append(match.group(1))
             except Exception as e:
                 logger.debug(f"Error extracting ASIN: {e}")
                 continue
+
+        # Fall back to the legacy grid markup if Amazon serves it again.
+        if not asins:
+            products = page.locator('[data-asin]').all()
+            logger.info(f"No /dp/ links matched; trying {len(products)} data-asin elements")
+            for product in products:
+                try:
+                    asin = product.get_attribute('data-asin')
+                    if asin and len(asin) == 10:
+                        asins.append(asin)
+                except Exception as e:
+                    logger.debug(f"Error extracting ASIN: {e}")
+                    continue
     except Exception as e:
         logger.error(f"Error scraping daily deals ASINs: {e}")
         return []
 
     unique_asins = list(set(asins))
-    logger.info(f"Found {len(unique_asins)} unique deal ASINs")
+    if not unique_asins:
+        # The page loaded without login/CAPTCHA yet yielded nothing — that is a
+        # broken scraper, not a day with no deals. Make it loud in the log.
+        logger.warning(
+            "Deals page yielded 0 ASINs — markup likely changed, Phase 2 is not working"
+        )
+    else:
+        logger.info(f"Found {len(unique_asins)} unique deal ASINs")
     return unique_asins
 
 
 def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool = False,
-                            domain: str = 'amazon.com', scraper=None) -> List[Dict[str, Any]]:
+                            domain: str = 'amazon.com', scraper=None,
+                            force: bool = False,
+                            cooldown_days: int = None) -> List[Dict[str, Any]]:
     """
     Check today's daily deals for matches against user's interests.
+
+    Args:
+        force: Re-check deals even if already recorded in deal_checks today
+        cooldown_days: Re-notify about a still-live deal after this many days
 
     Returns list of deal dicts for matched books.
     """
@@ -372,8 +403,8 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
     deal_asins = scrape_daily_deals(page, domain=domain)
     logger.info(f"Checking {len(deal_asins)} daily deals for matches...")
 
-    # Bulk fetch already-checked ASINs for today
-    if not dry_run:
+    # Bulk fetch already-checked ASINs for today (unless force mode)
+    if not dry_run and not force:
         cursor = db.conn.cursor()
         try:
             cursor.execute("SELECT asin FROM deal_checks WHERE check_date = CURDATE()")
@@ -385,6 +416,7 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
 
     # Bulk pre-fetch notification and price data for all deal ASINs
     bulk_last_notifs = db.get_bulk_last_notifications(deal_asins)
+    bulk_last_notif_dates = db.get_bulk_last_notification_dates(deal_asins)
     bulk_prev_prices = db.get_bulk_previous_prices(deal_asins)
 
     for asin in deal_asins:
@@ -456,7 +488,8 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
 
         # Check notification rules — do not re-notify at same/higher price
         last_notified_price = bulk_last_notifs.get(asin)
-        if not should_notify(current_price, list_price, last_notified_price):
+        if not should_notify(current_price, list_price, last_notified_price,
+                             bulk_last_notif_dates.get(asin), cooldown_days):
             logger.debug(f"Skipping {title} - already notified at same/lower price (${last_notified_price})")
             if not dry_run:
                 with db.batch_writes():
@@ -485,7 +518,8 @@ def check_daily_deals_phase(page, db: Database, check_delay: int, dry_run: bool 
             with db.batch_writes():
                 db.add_recommendation_book(asin, title, author, cover_url)
                 db.add_price_history(asin, current_price, list_price)
-                db.add_notification(asin, current_price)
+                # Notification rows are written after the email actually goes out,
+                # so a deal held back by the per-email cap is not suppressed.
                 db.add_deal_check(asin, was_deal=True, notified=True)
 
     logger.info(f"Found {len(deals_found)} daily deal matches")
@@ -700,7 +734,8 @@ async def _async_scrape_recommendations(session_path: str, headless: bool,
 def check_recommendations_phase(session_path: str, headless: bool, page_timeout: int,
                                  db: Database, check_delay: int,
                                  concurrency: int = 3, dry_run: bool = False,
-                                 domain: str = 'amazon.com') -> List[Dict[str, Any]]:
+                                 domain: str = 'amazon.com',
+                                 cooldown_days: int = None) -> List[Dict[str, Any]]:
     """
     Check prices for all recommended books using parallel async Playwright tabs.
 
@@ -743,6 +778,7 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
     result_asins = [asin for asin, _ in scrape_results]
     bulk_prev_prices = db.get_bulk_previous_prices(result_asins)
     bulk_last_notifs = db.get_bulk_last_notifications(result_asins)
+    bulk_last_notif_dates = db.get_bulk_last_notification_dates(result_asins)
     bulk_rec_sources = db.get_bulk_recommendation_sources(result_asins)
 
     for asin, book_info in scrape_results:
@@ -784,7 +820,8 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
             continue
 
         # Check notification rules (from bulk pre-fetch)
-        if should_notify(current_price, list_price, last_notified_price):
+        if should_notify(current_price, list_price, last_notified_price,
+                         bulk_last_notif_dates.get(asin), cooldown_days):
             savings_percent = calculate_savings_percent(current_price, list_price)
             source_title = bulk_rec_sources.get(asin)
             match_reason = f"Recommended from: {source_title}" if source_title else "Recommended"
@@ -809,8 +846,7 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
             with db.batch_writes():
                 db.add_recommendation_book(asin, title, author, cover_url)
                 db.add_price_history(asin, current_price, list_price)
-                if notified_flag:
-                    db.add_notification(asin, current_price)
+                # add_notification happens post-email (see check_deals)
                 db.add_deal_check(asin, was_deal=True, notified=notified_flag)
 
     logger.info(f"Recommendation check complete: {len(scrape_results)} checked, {error_count} errors, {len(deals_found)} deals found")
@@ -842,6 +878,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
     amazon_domain = config.get('amazon.domain', 'amazon.com')
 
     # Auto-purchase settings
+    cooldown_days = config.get('deals.notification_cooldown_days')
+    max_per_email = config.get('deals.max_deals_per_email', 15)
+
     ap_enabled = config.get('auto_purchase.enabled', False)
     ap_max_price = config.get('auto_purchase.max_price', 5.00)
     ap_require_full = config.get('auto_purchase.require_points_full_coverage', True)
@@ -914,6 +953,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                 candidate_asins = [b['asin'] for b in books]
                 bulk_prev_prices = db.get_bulk_previous_prices(candidate_asins)
                 bulk_last_notifs = db.get_bulk_last_notifications(candidate_asins)
+                bulk_last_notif_dates = db.get_bulk_last_notification_dates(candidate_asins)
 
                 for book in books:
                     asin = book['asin']
@@ -963,7 +1003,8 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
 
                         # Check if should notify (from bulk pre-fetch)
                         last_notified_price = bulk_last_notifs.get(asin)
-                        notify = should_notify(current_price, list_price, last_notified_price)
+                        notify = should_notify(current_price, list_price, last_notified_price,
+                                               bulk_last_notif_dates.get(asin), cooldown_days)
 
                         # Auto-purchase: tracked sample, qualifies as a deal, <= cap,
                         # points fully cover, not already bought, under per-run cap.
@@ -1019,8 +1060,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
                                     logger.debug(f"Updating metadata for {asin}")
                                     db.update_book_metadata(asin, title, author, cover_url)
                                 db.add_price_history(asin, current_price, list_price)
-                                if notify_record:
-                                    db.add_notification(asin, current_price)
+                                # add_notification happens post-email (see below)
                         else:
                             # dry_run: still update metadata in-memory log but no DB writes
                             if scraped_title or scraped_author or scraped_cover:
@@ -1063,7 +1103,9 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
             # Phase 2: Check daily deals
             if not skip_daily and not target_asin:
                 daily_deals = check_daily_deals_phase(page, db, check_delay, dry_run,
-                                                      domain=amazon_domain, scraper=scraper)
+                                                      domain=amazon_domain, scraper=scraper,
+                                                      force=force,
+                                                      cooldown_days=cooldown_days)
                 tracked_deals.extend(daily_deals)
 
         finally:
@@ -1074,8 +1116,29 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
         concurrency = config.get('deals.recommendation_concurrency', 3)
         recommended_deals = check_recommendations_phase(
             session_path, headless, page_timeout, db, check_delay, concurrency, dry_run,
-            domain=amazon_domain
+            domain=amazon_domain, cooldown_days=cooldown_days
         )
+
+    # Cap how many deals go in one email. Enabling the re-notification cooldown
+    # surfaces a large backlog of long-suppressed deals at once; sending the best
+    # discounts first and holding the rest spreads it over subsequent runs.
+    # Anything already bought is always included — the user must be told.
+    def _must_send(deal):
+        return bool(deal.get('auto_purchased') or deal.get('needs_manual_purchase'))
+
+    forced = [d for d in tracked_deals + recommended_deals if _must_send(d)]
+    optional = [d for d in tracked_deals + recommended_deals if not _must_send(d)]
+    budget = max(max_per_email - len(forced), 0) if max_per_email else None
+    selected_asins = {d['asin'] for d in forced}
+    selected_asins.update(d['asin'] for d in rank_deals_for_email(optional, budget))
+
+    held_back = len(optional) + len(forced) - len(selected_asins)
+    if held_back > 0:
+        logger.info(f"Holding back {held_back} deal(s) for a later run "
+                    f"(max {max_per_email} per email)")
+
+    tracked_deals = [d for d in tracked_deals if d['asin'] in selected_asins]
+    recommended_deals = [d for d in recommended_deals if d['asin'] in selected_asins]
 
     # Send email if deals found in either section
     all_deals = tracked_deals + recommended_deals
@@ -1096,6 +1159,12 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
 
         notifier.send_email(to_address, subject, html)
         logger.info("Email sent successfully")
+
+        # Only now record the notifications — a deal held back by the cap stays
+        # unnotified so it surfaces on a later run instead of going silent.
+        with db.batch_writes():
+            for deal in all_deals:
+                db.add_notification(deal['asin'], deal['current_price'])
     elif all_deals and dry_run:
         logger.info(f"DRY RUN: Would send email for {len(tracked_deals)} tracked + {len(recommended_deals)} recommended deals:")
         for deal in tracked_deals:

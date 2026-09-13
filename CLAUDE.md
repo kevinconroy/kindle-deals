@@ -116,6 +116,34 @@ python src/cleanup_samples.py --open
 0 5 * * * cd /path/to/kindle-deals && ./check_all_deals.sh
 ```
 
+**IMPORTANT — `sync_library.py` is unreliable unattended.** Amazon intermittently
+bounces the digital console (`/hz/mycd/digital-console/...`) to `/ap/signin` with
+`openid.pape.max_auth_age=3600`, demanding a recent password entry that a stored
+`browser_session_path` cannot satisfy; the sync then exits 2. Every weekly cron sync
+from 2026-08-23 through 2026-09-13 failed this way, and the last successful sample sync
+before 2026-09-13 was 2026-06-26.
+
+The exact trigger is **not** pinned down: it is not headless-vs-headed (after a
+successful sync on 2026-09-13, the console loaded fine in both modes on the same session
+file). A successful console visit appears to refresh the auth, so syncing more often may
+keep it fresh — worth trying before assuming a manual sync is always required.
+
+`check_deals.py` is unaffected — the product and book-deals pages it uses work from the
+saved session indefinitely.
+
+When a sync does hit the password page, run it with a human available to sign in:
+
+```bash
+# Opens a visible browser (--login forces headless=False), waits for you to sign in.
+# It watches for the library to render rather than blocking on a keypress, so it
+# proceeds on its own if no sign-in turns out to be needed.
+python src/sync_library.py --login --force
+```
+
+Because the sync exits 2 with no notification, a weekly `sync_library.py` cron entry
+fails silently every week. Surface those failures (or run the sync manually) rather than
+assuming cron keeps the library current.
+
 ## Architecture
 
 ### Core Modules
@@ -290,17 +318,33 @@ A book qualifies as a deal if it meets EITHER condition:
 Users are notified when:
 1. A book first meets deal criteria (first-time notification)
 2. A previously notified book drops to a lower price (price drop notification)
+3. A still-live deal was last notified more than `notification_cooldown_days` ago
+   (re-notification). Without this, a book already at its floor price (e.g. $0.99)
+   can never drop further and goes silent permanently.
 
 Users are NOT notified if:
 - Book doesn't meet deal criteria
-- Book was already notified at the same or lower price
+- Book was already notified at the same or lower price within the cooldown window
 - This prevents duplicate notifications for the same deal
+
+### Email Volume
+
+The cooldown surfaces a backlog of long-suppressed deals at once, so each email is
+capped at `deals.max_deals_per_email` (default 15), highest percent-off first. Deals
+over the cap are held back and picked up on later runs. Auto-purchased books and books
+needing manual purchase always go in the email regardless of the cap.
+
+Notification rows are written **after** the email is sent successfully, for the books
+actually included. A deal held back by the cap therefore stays unnotified and surfaces
+on a later run. (`deal_checks.notified` still records that the book *qualified* to
+notify that day; it is a reporting column and is not read by notification logic.)
 
 ### Implementation
 
 The logic is implemented in `src/deal_logic.py`:
 - `is_deal(current_price, list_price)` - Returns True if book qualifies as a deal
-- `should_notify(current_price, list_price, last_notified_price)` - Returns True if user should be notified
+- `should_notify(current_price, list_price, last_notified_price, last_notified_date=None, cooldown_days=None)` - Returns True if user should be notified
+- `rank_deals_for_email(deals, limit)` - Orders deals best-discount-first and caps them
 
 ## Configuration
 
@@ -374,6 +418,12 @@ Tests are located in the `tests/` directory and use pytest:
 - **test_email_notifier.py** - Email notifier tests
   - Tests HTML email generation
   - Tests SMTP integration (with mocking)
+
+- **test_daily_deals.py** - Daily deals (Phase 2) tests
+  - Tests ASIN extraction from the deals page with a fake Playwright page
+  - Covers the `/dp/` link markup, the legacy `data-asin` fallback, and login/CAPTCHA bailout
+  - Asserts a rendering page with 0 ASINs logs a WARNING (silent scraper rot)
+  - Tests that `--force` re-checks deals already recorded in `deal_checks` today
 
 ### Test Requirements
 

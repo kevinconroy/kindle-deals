@@ -823,6 +823,31 @@ class Database:
         finally:
             cursor.close()
 
+    def get_bulk_last_notification_dates(self, asins: list) -> dict:
+        """Fetch the most recent notified_date for each ASIN in one query. Returns dict asin->datetime."""
+        if not asins:
+            return {}
+        placeholders = ','.join(['%s'] * len(asins))
+        cursor = self.conn.cursor(dictionary=True)
+        try:
+            cursor.execute(f"""
+                SELECT n.asin, n.notified_date
+                FROM notifications n
+                INNER JOIN (
+                    SELECT asin, MAX(id) AS max_id
+                    FROM notifications
+                    WHERE asin IN ({placeholders})
+                    GROUP BY asin
+                ) latest ON n.asin = latest.asin AND n.id = latest.max_id
+            """, asins)
+            return {
+                row['asin']: row['notified_date']
+                for row in cursor.fetchall()
+                if row['notified_date'] is not None
+            }
+        finally:
+            cursor.close()
+
     def get_existing_asins(self, asins: list) -> set:
         """Bulk check which ASINs already exist in books table. Replaces per-book get_book() calls."""
         if not asins:

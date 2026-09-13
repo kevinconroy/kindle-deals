@@ -24,7 +24,8 @@ email:
 deals:
   max_price: 4.00
   min_discount_percent: 50
-  notification_cooldown_days: 30
+  notification_cooldown_days: 30      # re-notify a still-live deal after this many days (blank to disable)
+  max_deals_per_email: 15             # cap deals per email; best discounts first, rest held for later runs (0 = no cap)
   recommendation_concurrency: 3  # number of parallel browser tabs for recommendation checking
 
 auto_purchase:
