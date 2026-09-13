@@ -681,26 +681,31 @@ class Database:
         finally:
             cursor.close()
 
-    def get_unchecked_recommendation_asins(self) -> List[str]:
+    def get_unchecked_recommendation_asins(self, force: bool = False) -> List[str]:
         """
         Get all recommended ASINs that haven't been checked today.
 
         Returns ASINs from recommendations table where the source book
         is an active sample, excluding any already in deal_checks for today.
 
+        Args:
+            force: Include ASINs already checked today (matches --force in
+                Phase 1 and Phase 2)
+
         Returns:
             List of recommended ASIN strings
         """
+        exclude_checked = "" if force else """
+                AND r.recommended_asin NOT IN (
+                    SELECT asin FROM deal_checks WHERE check_date = CURDATE()
+                )"""
         cursor = self.conn.cursor()
         try:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT DISTINCT r.recommended_asin
                 FROM recommendations r
                 JOIN books b ON r.source_asin = b.asin
-                WHERE b.is_sample = 1 AND b.is_deleted = 0
-                AND r.recommended_asin NOT IN (
-                    SELECT asin FROM deal_checks WHERE check_date = CURDATE()
-                )
+                WHERE b.is_sample = 1 AND b.is_deleted = 0{exclude_checked}
             """)
             results = cursor.fetchall()
             return [row[0] for row in results]

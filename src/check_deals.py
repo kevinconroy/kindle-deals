@@ -735,7 +735,8 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
                                  db: Database, check_delay: int,
                                  concurrency: int = 3, dry_run: bool = False,
                                  domain: str = 'amazon.com',
-                                 cooldown_days: int = None) -> List[Dict[str, Any]]:
+                                 cooldown_days: int = None,
+                                 force: bool = False) -> List[Dict[str, Any]]:
     """
     Check prices for all recommended books using parallel async Playwright tabs.
 
@@ -754,7 +755,7 @@ def check_recommendations_phase(session_path: str, headless: bool, page_timeout:
     Returns:
         List of deal dicts for recommended books that qualify
     """
-    rec_asins = db.get_unchecked_recommendation_asins()
+    rec_asins = db.get_unchecked_recommendation_asins(force=force)
     if not rec_asins:
         logger.info("No unchecked recommendation ASINs to process")
         return []
@@ -1116,7 +1117,7 @@ def check_deals(config: Config, db: Database, target_asin: str = None, force: bo
         concurrency = config.get('deals.recommendation_concurrency', 3)
         recommended_deals = check_recommendations_phase(
             session_path, headless, page_timeout, db, check_delay, concurrency, dry_run,
-            domain=amazon_domain, cooldown_days=cooldown_days
+            domain=amazon_domain, cooldown_days=cooldown_days, force=force
         )
 
     # Cap how many deals go in one email. Enabling the re-notification cooldown

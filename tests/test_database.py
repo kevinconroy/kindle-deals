@@ -303,6 +303,22 @@ def test_get_unchecked_recommendation_asins(clean_db):
     assert set(unchecked) == {'R002', 'R003'}
 
 
+def test_get_unchecked_recommendation_asins_force_ignores_todays_checks(clean_db):
+    """--force is documented as "check even if already checked today".
+
+    Phase 1 and Phase 2 honor it; without this, Phase 3 silently re-checked only
+    the ASINs missed by an earlier run on the same day.
+    """
+    clean_db.add_book(asin='B001', title='Sample Book 1')
+    clean_db.add_recommendation('B001', 'R001')
+    clean_db.add_recommendation('B001', 'R002')
+
+    clean_db.add_deal_check('R001', was_deal=False, notified=False)
+
+    assert set(clean_db.get_unchecked_recommendation_asins()) == {'R002'}
+    assert set(clean_db.get_unchecked_recommendation_asins(force=True)) == {'R001', 'R002'}
+
+
 def test_get_unchecked_recommendation_asins_excludes_deleted_sources(clean_db):
     """Test that recommendations from deleted source books are excluded."""
     clean_db.add_book(asin='B001', title='Active Sample')
