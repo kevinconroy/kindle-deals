@@ -68,7 +68,8 @@ class Database:
                     is_sample TINYINT(1) DEFAULT 1,
                     is_deleted TINYINT(1) DEFAULT 0,
                     is_recommendation TINYINT(1) DEFAULT 0,
-                    has_owned_copy TINYINT(1) DEFAULT 0
+                    has_owned_copy TINYINT(1) DEFAULT 0,
+                    sample_removed_date DATETIME NULL
                 )
             """)
 
@@ -125,6 +126,18 @@ class Database:
                 """, (self.database,))
                 if not cursor.fetchone():
                     cursor.execute("ALTER TABLE books ADD COLUMN has_owned_copy TINYINT(1) DEFAULT 0")
+                    self.conn.commit()
+            except Exception:
+                pass
+
+            # Migrate: add sample_removed_date column (for existing databases)
+            try:
+                cursor.execute("""
+                    SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'books' AND COLUMN_NAME = 'sample_removed_date'
+                """, (self.database,))
+                if not cursor.fetchone():
+                    cursor.execute("ALTER TABLE books ADD COLUMN sample_removed_date DATETIME NULL")
                     self.conn.commit()
             except Exception:
                 pass
@@ -544,10 +557,82 @@ class Database:
             cursor.execute("""
                 SELECT * FROM books
                 WHERE is_sample = 1 AND is_deleted = 0 AND has_owned_copy = 1
+                  AND sample_removed_date IS NULL
                 ORDER BY title
             """)
             results = cursor.fetchall()
             return results
+        finally:
+            cursor.close()
+
+    def get_sample_cleanup_candidates(self) -> List[Dict[str, Any]]:
+        """
+        Get samples that should be deleted from the Amazon library.
+
+        A candidate is a sample we auto-purchased (check_deals marks those
+        is_deleted=1, but Kindle usually leaves the sample behind) or a sample
+        the library sync saw alongside an owned copy (is_deleted is ignored: a
+        --force sync can mark a flagged sample deleted while it is still in the
+        library, and the console check verifies it live). Once the sample has been
+        removed from Amazon (sample_removed_date set) it is no longer a candidate.
+
+        Returns:
+            List of dictionaries with book data, ordered by title
+        """
+        cursor = self.conn.cursor(dictionary=True)
+        try:
+            cursor.execute("""
+                SELECT * FROM books
+                WHERE is_sample = 1 AND sample_removed_date IS NULL
+                  AND (asin IN (SELECT asin FROM purchases) OR has_owned_copy = 1)
+                ORDER BY title
+            """)
+            return cursor.fetchall()
+        finally:
+            cursor.close()
+
+    def clear_unowned_flag(self, asin: str) -> bool:
+        """
+        Clear a has_owned_copy flag that turned out to be false.
+
+        The sync flags a sample as owned when it sees a KindleEBook under the same
+        ASIN, which also happens for Kindle Unlimited / Prime Reading borrows that
+        later expire. Flagged books are excluded from deal checks, so a false flag
+        silently stops tracking the book. Purchased books are never cleared.
+
+        Args:
+            asin: Amazon Standard Identification Number
+
+        Returns:
+            True if a flag was cleared
+        """
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE books SET has_owned_copy = 0
+                WHERE asin = %s AND has_owned_copy = 1
+                  AND asin NOT IN (SELECT asin FROM purchases)
+            """, (asin,))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            cursor.close()
+
+    def mark_sample_removed(self, asin: str) -> None:
+        """
+        Record that the sample for this ASIN is gone from the Amazon library.
+
+        Also marks the book deleted, since the sample it tracks no longer exists.
+
+        Args:
+            asin: Amazon Standard Identification Number
+        """
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE books SET sample_removed_date = %s, is_deleted = 1 WHERE asin = %s
+            """, (datetime.now(), asin))
+            self.conn.commit()
         finally:
             cursor.close()
 

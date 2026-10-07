@@ -499,3 +499,60 @@ def test_add_purchase_is_idempotent(clean_db):
     cursor.execute("SELECT COUNT(*) FROM purchases WHERE asin = %s", ('B0PURCHASE2',))
     assert cursor.fetchone()[0] == 1
     cursor.close()
+
+
+def test_sample_cleanup_candidates_include_purchases_and_dual_state(clean_db):
+    """Purchased books and dual-state samples are candidates until their sample is removed."""
+    clean_db.add_book('B0BOUGHT01', title='Bought')
+    clean_db.add_purchase('B0BOUGHT01', 2.99, points_applied=2.99)
+    clean_db.mark_book_deleted('B0BOUGHT01')  # check_deals marks purchases deleted
+
+    clean_db.add_book('B0DUAL0001', title='Dual')
+    clean_db.set_has_owned_copy('B0DUAL0001', True)
+
+    clean_db.add_book('B0PLAIN001', title='Just a sample')
+
+    asins = {b['asin'] for b in clean_db.get_sample_cleanup_candidates()}
+    assert asins == {'B0BOUGHT01', 'B0DUAL0001'}
+
+
+def test_sample_cleanup_candidates_include_deleted_dual_state(clean_db):
+    """A flagged sample marked deleted by an earlier sync is still a candidate."""
+    clean_db.add_book('B0DUAL0003', title='The Running Man')
+    clean_db.set_has_owned_copy('B0DUAL0003', True)
+    clean_db.mark_book_deleted('B0DUAL0003')
+
+    assert [b['asin'] for b in clean_db.get_sample_cleanup_candidates()] == ['B0DUAL0003']
+
+
+def test_mark_sample_removed_drops_candidate(clean_db):
+    clean_db.add_book('B0DUAL0002', title='Dual')
+    clean_db.set_has_owned_copy('B0DUAL0002', True)
+
+    clean_db.mark_sample_removed('B0DUAL0002')
+
+    assert clean_db.get_sample_cleanup_candidates() == []
+    assert clean_db.get_samples_with_owned_copies() == []
+    book = clean_db.get_book('B0DUAL0002')
+    assert book['sample_removed_date'] is not None
+    assert book['is_deleted'] == 1
+
+
+def test_clear_unowned_flag_returns_book_to_deal_tracking(clean_db):
+    """A false has_owned_copy (e.g. an expired borrow) is cleared so deals are checked again."""
+    clean_db.add_book('B0BORROW01', title='Borrowed once')
+    clean_db.set_has_owned_copy('B0BORROW01', True)
+
+    assert clean_db.clear_unowned_flag('B0BORROW01') is True
+
+    assert clean_db.get_book('B0BORROW01')['has_owned_copy'] == 0
+    assert 'B0BORROW01' in {b['asin'] for b in clean_db.get_sample_books()}
+
+
+def test_clear_unowned_flag_never_touches_purchases(clean_db):
+    clean_db.add_book('B0BOUGHT02', title='Bought')
+    clean_db.set_has_owned_copy('B0BOUGHT02', True)
+    clean_db.add_purchase('B0BOUGHT02', 2.99, points_applied=2.99)
+
+    assert clean_db.clear_unowned_flag('B0BOUGHT02') is False
+    assert clean_db.get_book('B0BOUGHT02')['has_owned_copy'] == 1

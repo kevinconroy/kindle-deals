@@ -4,7 +4,8 @@
 #
 # This script runs the complete deal checking workflow:
 # 1. Sync Kindle library (with recommendations)
-# 2. Check deals (sample books + daily deals)
+# 2. Check deals (sample books + daily deals; may auto-purchase)
+# 3. Delete samples of books we now own, including anything just purchased
 #
 
 set -e  # Exit on any error
@@ -45,6 +46,7 @@ SKIP_DAILY=""
 SKIP_COLLECTIONS=""
 LOGIN=""
 SKIP_RECOMMENDATIONS=""
+SKIP_CLEANUP=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -84,6 +86,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_RECOMMENDATIONS="--skip-recommendations"
             shift
             ;;
+        --skip-cleanup)
+            SKIP_CLEANUP="true"
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [options]"
             echo ""
@@ -97,6 +103,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-collections  Skip auto-adding samples to collection"
             echo "  --login          Log in to Amazon (interactive, saves session)"
             echo "  --skip-recommendations  Skip checking recommended book prices"
+            echo "  --skip-cleanup   Skip deleting samples of owned books from the library"
             echo "  --help, -h       Show this help message"
             echo ""
             exit 0
@@ -130,10 +137,11 @@ else
     echo ""
 fi
 
-# Step 2: Check deals (sample books + daily deals)
+# Step 2: Check deals (sample books + daily deals; may auto-purchase)
 echo -e "${GREEN}Step 2: Checking deals...${NC}"
 echo ""
 
+DEALS_FAILED=""
 if python src/check_deals.py $DRY_RUN $VERBOSE $FORCE $SKIP_SAMPLES $SKIP_DAILY $SKIP_RECOMMENDATIONS; then
     echo ""
     echo -e "${GREEN}✓ Deal check complete${NC}"
@@ -141,6 +149,28 @@ if python src/check_deals.py $DRY_RUN $VERBOSE $FORCE $SKIP_SAMPLES $SKIP_DAILY 
 else
     echo ""
     echo -e "${YELLOW}Deal check failed${NC}"
+    echo ""
+    DEALS_FAILED="true"
+fi
+
+# Step 3: Delete samples of owned books, including anything just auto-purchased.
+# Runs even if the deal check failed, since it may have bought books before failing.
+if [ -z "$SKIP_CLEANUP" ]; then
+    echo -e "${GREEN}Step 3: Deleting samples of owned books...${NC}"
+    echo ""
+
+    if python src/cleanup_samples.py --delete $DRY_RUN $VERBOSE; then
+        echo -e "${GREEN}✓ Sample cleanup complete${NC}"
+    else
+        echo -e "${YELLOW}Warning: Sample cleanup had failures${NC}"
+    fi
+    echo ""
+else
+    echo -e "${YELLOW}Skipping sample cleanup (--skip-cleanup)${NC}"
+    echo ""
+fi
+
+if [ -n "$DEALS_FAILED" ]; then
     exit 1
 fi
 

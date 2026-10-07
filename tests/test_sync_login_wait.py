@@ -86,3 +86,33 @@ def test_resolve_headless_explicit_override_wins():
 
 def test_resolve_headless_defaults_to_headless_when_unset():
     assert sync_library.resolve_headless(_FakeConfig({})) is True
+
+
+class _FlagDb:
+    def __init__(self, flagged):
+        self.flagged = set(flagged)
+        self.cleared = []
+
+    def get_existing_asins(self, asins):
+        return set(asins)
+
+    def clear_unowned_flag(self, asin):
+        if asin in self.flagged:
+            self.cleared.append(asin)
+            return True
+        return False
+
+
+def test_full_scan_clears_owned_flag_for_sample_only_asins():
+    """A full scan seeing only the sample proves there is no owned copy (e.g. expired borrow)."""
+    db = _FlagDb(flagged={'B0SAMPLE01', 'B0DUAL0001'})
+    asin_kinds = {
+        'B0SAMPLE01': {'sample'},
+        'B0DUAL0001': {'sample', 'owned'},
+        'B0OWNED001': {'owned'},
+    }
+
+    cleared = sync_library.clear_false_owned_flags(db, asin_kinds)
+
+    assert cleared == 1
+    assert db.cleared == ['B0SAMPLE01']

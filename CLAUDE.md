@@ -71,6 +71,9 @@ pytest --cov=src
 
 # Skip recommended book price checks
 ./check_all_deals.sh --skip-recommendations
+
+# Skip deleting samples of owned books from the Amazon library
+./check_all_deals.sh --skip-cleanup
 ```
 
 **Individual Scripts:**
@@ -107,6 +110,11 @@ python src/cleanup_samples.py
 
 # List and automatically open cleanup URLs in browser tabs
 python src/cleanup_samples.py --open
+
+# Delete samples of purchased/owned books from the Amazon digital console
+python src/cleanup_samples.py --delete
+python src/cleanup_samples.py --delete --dry-run          # verify only, delete nothing
+python src/cleanup_samples.py --delete --asin B003XT60E0  # one book (repeatable)
 ```
 
 ### Cron Schedule
@@ -200,6 +208,21 @@ The application consists of these main modules:
    - Confirms the order before recording it; never touches the adjacent audiobook checkbox
    - 1-Click is instant (no review page); writes before/after screenshots to the session dir
 
+8. **sample_cleaner.py** - Deletes leftover samples from the digital console
+   - Kindle usually keeps the sample after a purchase; this removes it
+   - SAFETY: the owned copy and sample share an ASIN, and the per-row Delete button id
+     (`DELETE_TITLE_ACTION_{ASIN}`) is the same on both rows, so it is never used. The flow
+     searches the console by title, requires both `{ASIN}:KindleEBook` and
+     `{ASIN}:KindleEBookSample`, reloads the search in the Samples view
+     (`contentlist/booksSamples/dateDsc/{term}` — the All/Samples dropdown drops the search
+     term, so it is not used), ticks only the sample
+     (the real `<input>` is hidden; click `{id}_checkmark`), requires it to be the only
+     checked box, bulk-deletes, then reloads until the sample is gone and the owned copy remains
+   - Amazon removes items asynchronously — the sample can still list for a few seconds
+   - Console search returns nothing for terms containing `&`, `!`, `,` or dashes; `search_term()`
+     keeps the title before `:`/`(` and turns other punctuation (except apostrophes) into spaces
+   - Runs headed per `sync.headless` (same digital-console sign-in problem as the sync)
+
 ### Scripts
 
 **Main Workflow:**
@@ -207,7 +230,10 @@ The application consists of these main modules:
   - Handles virtual environment activation
   - Runs library sync with recommendations
   - Checks deals on sample books and daily deals
-  - Supports `--dry-run`, `--verbose`, `--force`, `--skip-sync`, `--skip-samples`, `--skip-daily`, `--skip-collections`, `--skip-recommendations` flags
+  - Deletes samples of owned books (`cleanup_samples.py --delete`) after the deal check, so a
+    book auto-purchased in the run has its sample removed in the same run (runs even if the deal
+    check fails). If the new purchase isn't in the library yet, it is retried next run
+  - Supports `--dry-run`, `--verbose`, `--force`, `--skip-sync`, `--skip-samples`, `--skip-daily`, `--skip-collections`, `--skip-recommendations`, `--skip-cleanup` flags
 
 **Individual Scripts:**
 1. **sync_library.py** - Syncs your Kindle library from Amazon digital console using Playwright
@@ -216,7 +242,10 @@ The application consists of these main modules:
    - Early-stop optimization: stops after N consecutive known ASINs (configurable, default 10)
    - Auto-adds uncollected samples to a configurable collection (e.g., "Read Me 2026")
    - Also scrapes "also bought" recommendations for each sample
-   - `--force` disables early stopping and enables removal tracking
+   - `--force` disables early stopping and enables removal tracking, and clears `has_owned_copy`
+     for ASINs the full scan saw only as a sample. The dual-state check also fires for Kindle
+     Unlimited / Prime Reading borrows (a `KindleEBook` under the same ASIN); once returned, the
+     stale flag kept the book out of deal checks — 13 books were stuck this way as of 2026-10-07
    - `--skip-collections` skips collection management
 2. **check_deals.py** - Checks book prices, daily deals, and recommended books via web scraping, sends notifications
    - Phase 1: Sample book price checks (also auto-purchases eligible samples — see `auto_purchase` config — paying with Rewards points and flagging them as "Auto-purchased" in the email)
@@ -224,6 +253,11 @@ The application consists of these main modules:
    - Phase 3: Parallel recommendation price checking using ThreadPoolExecutor with configurable concurrency
    - Supports `--skip-samples`, `--skip-daily`, and `--skip-recommendations` flags for granular control
 3. **send_notification.py** - Sends test email notifications
+4. **cleanup_samples.py** - Lists samples with an owned copy; `--delete` removes them from Amazon
+   - Candidates: auto-purchased books plus samples the sync flagged `has_owned_copy`, until `sample_removed_date` is set
+   - Never deletes when the owned copy isn't visible in the console (e.g. a purchase not yet delivered); retries next run
+   - Fetches a missing title from the product page first (sync-flagged dual-state books never pass through check_deals, so they can be untitled)
+   - When only the sample exists and the book was never purchased, clears the false `has_owned_copy` flag so the book returns to deal tracking
 
 ## Database Schema
 
@@ -239,11 +273,13 @@ CREATE TABLE books (
     date_added DATETIME NOT NULL,
     is_sample TINYINT(1) DEFAULT 1,
     is_deleted TINYINT(1) DEFAULT 0,
-    is_recommendation TINYINT(1) DEFAULT 0
+    is_recommendation TINYINT(1) DEFAULT 0,
+    has_owned_copy TINYINT(1) DEFAULT 0,
+    sample_removed_date DATETIME NULL
 )
 ```
 
-Note: Title can be NULL when books are first synced from library (ASIN only). The check_deals script will fetch and populate title/author/cover_url via web scraping. `is_sample=1` for samples, `0` for owned books. `is_deleted=1` for books removed from library (only tracked during `--force` full syncs). `is_recommendation=1` for books added via recommendation price checking (not in user's library).
+Note: Title can be NULL when books are first synced from library (ASIN only). The check_deals script will fetch and populate title/author/cover_url via web scraping. `is_sample=1` for samples, `0` for owned books. `is_deleted=1` for books removed from library (only tracked during `--force` full syncs). `is_recommendation=1` for books added via recommendation price checking (not in user's library). `has_owned_copy=1` when the sync sees both a sample and an owned copy. `sample_removed_date` is set (and `is_deleted=1`) once the sample is verified gone from the Amazon library.
 
 ### price_history table
 ```sql

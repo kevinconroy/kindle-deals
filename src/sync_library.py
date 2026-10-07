@@ -14,7 +14,6 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import List
-from urllib.parse import quote
 
 from config import Config
 from database import Database
@@ -240,6 +239,27 @@ def add_samples_to_collection(page, items: list, collection_name: str, dry_run: 
         except Exception:
             pass
         return 0
+
+
+def clear_false_owned_flags(db: Database, asin_kinds: dict) -> int:
+    """
+    Clear has_owned_copy for ASINs a full scan saw only as a sample.
+
+    The dual-state check flags a sample as owned when a KindleEBook shows up
+    under the same ASIN, which also happens for Kindle Unlimited / Prime Reading
+    borrows. Once the borrow is returned only the sample remains, but the flag
+    stayed set and kept the book out of deal checks. Only valid on a full
+    (--force) scan, where every library item has been seen.
+
+    Returns:
+        Number of flags cleared
+    """
+    cleared = 0
+    for asin, kinds in asin_kinds.items():
+        if kinds == {'sample'} and db.clear_unowned_flag(asin):
+            logger.info(f"{asin}: only a sample in library, cleared owned-copy flag")
+            cleared += 1
+    return cleared
 
 
 def sync_library(config: Config, db: Database, dry_run: bool = False,
@@ -520,27 +540,17 @@ def sync_library(config: Config, db: Database, dry_run: bool = False,
 
             # Report books eligible for sample cleanup
             if not dry_run:
-                cleanup_books = db.get_samples_with_owned_copies()
-                if cleanup_books:
-                    logger.info(f"\n{'='*60}")
-                    logger.info(f"SAMPLE CLEANUP: {len(cleanup_books)} book(s) have both a sample and owned copy.")
-                    logger.info("You can delete the redundant sample using these URLs:")
-                    for book in cleanup_books:
-                        title = book.get('title')
-                        if title:
-                            encoded_title = quote(title, safe=':')
-                            url = f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc/{encoded_title}"
-                        else:
-                            url = f"https://www.{amazon_domain}/hz/mycd/digital-console/contentlist/booksAll/dateDsc"
-                        display = title or book['asin']
-                        logger.info(f"  {display}: {url}")
-                    logger.info(f"{'='*60}\n")
+                cleanup_count = len(db.get_sample_cleanup_candidates())
+                if cleanup_count:
+                    logger.info(f"{cleanup_count} sample(s) of owned books can be deleted: "
+                                "python src/cleanup_samples.py --delete")
 
             if total_collections_added > 0:
                 logger.info(f"Collections: added {total_collections_added} samples to collection")
 
             # Only mark books as deleted during --force full syncs
             if force and not dry_run:
+                clear_false_owned_flags(db, asin_kinds)
                 all_sample_books = {book['asin'] for book in db.get_sample_books()}
                 removed_asins = all_sample_books - synced_asins
                 if removed_asins:
